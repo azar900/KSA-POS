@@ -2,80 +2,111 @@
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-import sqlite3
+import psycopg2
+from psycopg2.extras import RealDictCursor
 import json
 from datetime import datetime
 import pytz
+import os
 
 app = FastAPI()
 IST = pytz.timezone('Asia/Kolkata')
 
-def init_db():
-    with sqlite3.connect("store.db", timeout=30) as conn:
-        c = conn.cursor()
-        c.execute("""CREATE TABLE IF NOT EXISTS products 
-                     (code TEXT PRIMARY KEY, name TEXT, unit TEXT, price REAL)""")
-        c.execute("""CREATE TABLE IF NOT EXISTS customers 
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE COLLATE NOCASE, balance REAL DEFAULT 0.0)""")
-        c.execute("""CREATE TABLE IF NOT EXISTS customer_ledger 
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                      customer_id INTEGER, 
-                      txn_date TEXT, 
-                      description TEXT, 
-                      debit REAL DEFAULT 0.0, 
-                      credit REAL DEFAULT 0.0, 
-                      balance REAL DEFAULT 0.0)""")
-        c.execute("""CREATE TABLE IF NOT EXISTS bills 
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                      bill_no INTEGER, 
-                      bill_date_key TEXT, 
-                      customer_type TEXT, 
-                      customer_name TEXT, 
-                      items TEXT, 
-                      total REAL, 
-                      paid REAL DEFAULT 0.0,
-                      time_str TEXT)""")
-        
-        c.executemany("INSERT OR IGNORE INTO products VALUES (?,?,?,?)", [
-            ('101', 'சீரகம்', 'Kg', 600.0),
-            ('102', 'மிளகு', 'Kg', 900.0),
-            ('103', 'கடலை எண்ணெய்', 'L', 180.0),
-            ('104', 'தேங்காய் எண்ணெய்', 'L', 220.0),
-            ('105', 'கோல்கேட் பேஸ்ட்', 'Pcs', 45.0),
-            ('106', 'துவரம் பருப்பு', 'Kg', 160.0)
-        ])
-        conn.commit()
+# -----------------------------------------------------------------------------------
+# உங்கள் Supabase Connection String-ஐ இங்கே பேஸ்ட் செய்யவும்:
+# (Render-ல் Environment Variable ஆக DATABASE_URL கொடுத்தாலும் தானாக எடுத்துக்கொள்ளும்)
+# -----------------------------------------------------------------------------------
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres.mxfeuazomskaxgirmdjz:KsaBilling6205Secure@aws-0-ap-south-1.pooler.supabase.com:6543/postgres")
 
-init_db()
+def get_db():
+    conn = psycopg2.connect(DATABASE_URL)
+    return conn
+
+def init_db():
+    conn = get_db()
+    c = conn.cursor()
+
+    # Create Tables for PostgreSQL
+    c.execute("""CREATE TABLE IF NOT EXISTS products
+                 (code TEXT PRIMARY KEY, name TEXT, unit TEXT, price NUMERIC)""")
+
+    c.execute("""CREATE TABLE IF NOT EXISTS customers
+                 (id SERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, balance NUMERIC DEFAULT 0.0)""")
+
+    c.execute("""CREATE TABLE IF NOT EXISTS customer_ledger
+                 (id SERIAL PRIMARY KEY,
+                  customer_id INTEGER,
+                  txn_date TEXT,
+                  description TEXT,
+                  debit NUMERIC DEFAULT 0.0,
+                  credit NUMERIC DEFAULT 0.0,
+                  balance NUMERIC DEFAULT 0.0)""")
+
+    c.execute("""CREATE TABLE IF NOT EXISTS bills
+                 (id SERIAL PRIMARY KEY,
+                  bill_no INTEGER,
+                  bill_date_key TEXT,
+                  customer_type TEXT,
+                  customer_name TEXT,
+                  items TEXT,
+                  total NUMERIC,
+                  paid NUMERIC DEFAULT 0.0,
+                  time_str TEXT)""")
+
+    # ஆரம்ப மாதிரிப் பொருட்கள்
+    sample_prods = [
+        ('101', 'சீரகம்', 'Kg', 600.0),
+        ('102', 'மிளகு', 'Kg', 900.0),
+        ('103', 'கடலை எண்ணெய்', 'L', 180.0),
+        ('104', 'தேங்காய் எண்ணெய்', 'L', 220.0),
+        ('105', 'கோல்கேட் பேஸ்ட்', 'Pcs', 45.0),
+        ('106', 'துவரம் பருப்பு', 'Kg', 160.0)
+    ]
+    for p in sample_prods:
+        c.execute("""INSERT INTO products (code, name, unit, price)
+                     VALUES (%s, %s, %s, %s)
+                     ON CONFLICT (code) DO NOTHING""", p)
+
+    conn.commit()
+    c.close()
+    conn.close()
+
+try:
+    init_db()
+except Exception as e:
+    print("Database Init Error (Check connection string):", e)
 
 @app.get("/api/data")
 def get_data():
-    with sqlite3.connect("store.db", timeout=30) as conn:
-        conn.row_factory = sqlite3.Row
-        c = conn.cursor()
-        c.execute("SELECT code, name, unit, price FROM products ORDER BY rowid DESC")
-        products = [dict(r) for r in c.fetchall()]
-        
-        c.execute("SELECT id, name, balance FROM customers ORDER BY name COLLATE NOCASE ASC")
-        customers = [dict(r) for r in c.fetchall()]
-        
-        c.execute("SELECT id, bill_no, bill_date_key, customer_type, customer_name, items, total, paid, time_str FROM bills ORDER BY id DESC LIMIT 50")
-        raw_bills = c.fetchall()
-        bills = []
-        for r in raw_bills:
-            d = dict(r)
-            d['items'] = json.loads(d['items'])
-            bills.append(d)
-        return {"products": products, "customers": customers, "bills": bills}
+    conn = get_db()
+    c = conn.cursor(cursor_factory=RealDictCursor)
+    c.execute("SELECT code, name, unit, price FROM products ORDER BY code ASC")
+    products = c.fetchall()
+
+    c.execute("SELECT id, name, balance FROM customers ORDER BY name ASC")
+    customers = c.fetchall()
+
+    c.execute("SELECT id, bill_no, bill_date_key, customer_type, customer_name, items, total, paid, time_str FROM bills ORDER BY id DESC LIMIT 50")
+    raw_bills = c.fetchall()
+    bills = []
+    for r in raw_bills:
+        d = dict(r)
+        d['items'] = json.loads(d['items'])
+        bills.append(d)
+
+    c.close()
+    conn.close()
+    return {"products": products, "customers": customers, "bills": bills}
 
 @app.get("/api/customer/ledger/{cid}")
 def get_customer_ledger(cid: int):
-    with sqlite3.connect("store.db", timeout=30) as conn:
-        conn.row_factory = sqlite3.Row
-        c = conn.cursor()
-        c.execute("SELECT txn_date, description, debit, credit, balance FROM customer_ledger WHERE customer_id=? ORDER BY id DESC", (cid,))
-        ledger = [dict(r) for r in c.fetchall()]
-        return {"ledger": ledger}
+    conn = get_db()
+    c = conn.cursor(cursor_factory=RealDictCursor)
+    c.execute("SELECT txn_date, description, debit, credit, balance FROM customer_ledger WHERE customer_id=%s ORDER BY id DESC", (cid,))
+    ledger = c.fetchall()
+    c.close()
+    conn.close()
+    return {"ledger": ledger}
 
 class ProductItem(BaseModel):
     code: str
@@ -85,19 +116,24 @@ class ProductItem(BaseModel):
 
 @app.post("/api/product")
 def update_product(p: ProductItem):
-    with sqlite3.connect("store.db", timeout=30) as conn:
-        c = conn.cursor()
-        c.execute("INSERT INTO products (code, name, unit, price) VALUES (?,?,?,?) ON CONFLICT(code) DO UPDATE SET name=excluded.name, unit=excluded.unit, price=excluded.price", 
-                  (p.code.strip(), p.name.strip(), p.unit, p.price))
-        conn.commit()
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""INSERT INTO products (code, name, unit, price) VALUES (%s,%s,%s,%s)
+                 ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name, unit=EXCLUDED.unit, price=EXCLUDED.price""",
+              (p.code.strip(), p.name.strip(), p.unit, p.price))
+    conn.commit()
+    c.close()
+    conn.close()
     return {"status": "ok"}
 
 @app.delete("/api/product/{code}")
 def delete_product(code: str):
-    with sqlite3.connect("store.db", timeout=30) as conn:
-        c = conn.cursor()
-        c.execute("DELETE FROM products WHERE code=?", (code.strip(),))
-        conn.commit()
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("DELETE FROM products WHERE code=%s", (code.strip(),))
+    conn.commit()
+    c.close()
+    conn.close()
     return {"status": "ok"}
 
 class CustomerModel(BaseModel):
@@ -107,34 +143,43 @@ class CustomerModel(BaseModel):
 
 @app.post("/api/customer")
 def save_customer(cu: CustomerModel):
-    with sqlite3.connect("store.db", timeout=30) as conn:
-        c = conn.cursor()
-        now_str = datetime.now(IST).strftime("%d-%m-%Y %I:%M:%S %p")
-        c_name = cu.name.strip()
-        
-        if cu.id > 0:
-            c.execute("UPDATE customers SET name=?, balance=? WHERE id=?", (c_name, cu.balance, cu.id))
-            c.execute("INSERT INTO customer_ledger (customer_id, txn_date, description, debit, credit, balance) VALUES (?,?,?,?,?,?)",
-                      (cu.id, now_str, "விவரம் திருத்தம் (Manual Edit)", 0.0, 0.0, cu.balance))
-        else:
-            c.execute("SELECT id FROM customers WHERE name=?", (c_name,))
-            if c.fetchone():
-                return {"status": "exists", "msg": f"'{c_name}' பெயரில் ஏற்கெனவே கணக்கு உள்ளது!"}
-            
-            c.execute("INSERT INTO customers (name, balance) VALUES (?,?)", (c_name, cu.balance))
-            new_cid = c.lastrowid
-            c.execute("INSERT INTO customer_ledger (customer_id, txn_date, description, debit, credit, balance) VALUES (?,?,?,?,?,?)",
-                      (new_cid, now_str, "தொடக்கக் கணக்கு", 0.0, 0.0, cu.balance))
-        conn.commit()
+    conn = get_db()
+    c = conn.cursor()
+    now_str = datetime.now(IST).strftime("%d-%m-%Y %I:%M:%S %p")
+    c_name = cu.name.strip()
+
+    if cu.id > 0:
+        c.execute("UPDATE customers SET name=%s, balance=%s WHERE id=%s", (c_name, cu.balance, cu.id))
+        c.execute("""INSERT INTO customer_ledger (customer_id, txn_date, description, debit, credit, balance)
+                     VALUES (%s,%s,%s,%s,%s,%s)""",
+                  (cu.id, now_str, "விவரம் திருத்தம் (Manual Edit)", 0.0, 0.0, cu.balance))
+    else:
+        c.execute("SELECT id FROM customers WHERE LOWER(name)=LOWER(%s)", (c_name,))
+        if c.fetchone():
+            c.close()
+            conn.close()
+            return {"status": "exists", "msg": f"'{c_name}' பெயரில் ஏற்கெனவே கணக்கு உள்ளது!"}
+
+        c.execute("INSERT INTO customers (name, balance) VALUES (%s,%s) RETURNING id", (c_name, cu.balance))
+        new_cid = c.fetchone()[0]
+        c.execute("""INSERT INTO customer_ledger (customer_id, txn_date, description, debit, credit, balance)
+                     VALUES (%s,%s,%s,%s,%s,%s)""",
+                  (new_cid, now_str, "தொடக்கக் கணக்கு", 0.0, 0.0, cu.balance))
+
+    conn.commit()
+    c.close()
+    conn.close()
     return {"status": "ok"}
 
 @app.delete("/api/customer/{cid}")
 def delete_customer(cid: int):
-    with sqlite3.connect("store.db", timeout=30) as conn:
-        c = conn.cursor()
-        c.execute("DELETE FROM customers WHERE id=?", (cid,))
-        c.execute("DELETE FROM customer_ledger WHERE customer_id=?", (cid,))
-        conn.commit()
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("DELETE FROM customers WHERE id=%s", (cid,))
+    c.execute("DELETE FROM customer_ledger WHERE customer_id=%s", (cid,))
+    conn.commit()
+    c.close()
+    conn.close()
     return {"status": "ok"}
 
 class PaymentModel(BaseModel):
@@ -143,18 +188,21 @@ class PaymentModel(BaseModel):
 
 @app.post("/api/customer/payment")
 def add_payment(p: PaymentModel):
-    with sqlite3.connect("store.db", timeout=30) as conn:
-        c = conn.cursor()
-        c.execute("SELECT balance FROM customers WHERE id=?", (p.customer_id,))
-        row = c.fetchone()
-        if row:
-            cur_bal = row[0]
-            new_bal = cur_bal - p.amount
-            now_str = datetime.now(IST).strftime("%d-%m-%Y %I:%M:%S %p")
-            c.execute("UPDATE customers SET balance=? WHERE id=?", (new_bal, p.customer_id))
-            c.execute("INSERT INTO customer_ledger (customer_id, txn_date, description, debit, credit, balance) VALUES (?,?,?,?,?,?)",
-                      (p.customer_id, now_str, "நேரடி ரொக்க வரவு (Cash Paid)", 0.0, p.amount, new_bal))
-            conn.commit()
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT balance FROM customers WHERE id=%s", (p.customer_id,))
+    row = c.fetchone()
+    if row:
+        cur_bal = float(row[0])
+        new_bal = cur_bal - p.amount
+        now_str = datetime.now(IST).strftime("%d-%m-%Y %I:%M:%S %p")
+        c.execute("UPDATE customers SET balance=%s WHERE id=%s", (new_bal, p.customer_id))
+        c.execute("""INSERT INTO customer_ledger (customer_id, txn_date, description, debit, credit, balance)
+                     VALUES (%s,%s,%s,%s,%s,%s)""",
+                  (p.customer_id, now_str, "நேரடி ரொக்க வரவு (Cash Paid)", 0.0, p.amount, new_bal))
+        conn.commit()
+    c.close()
+    conn.close()
     return {"status": "ok"}
 
 class BillRequest(BaseModel):
@@ -166,34 +214,36 @@ class BillRequest(BaseModel):
 
 @app.post("/api/bill")
 def save_bill(b: BillRequest):
-    with sqlite3.connect("store.db", timeout=30) as conn:
-        c = conn.cursor()
-        now_ist = datetime.now(IST)
-        date_key = now_ist.strftime("%Y-%m-%d")
-        time_str = now_ist.strftime("%d-%m-%Y %I:%M:%S %p")
-        
-        c.execute("SELECT MAX(bill_no) FROM bills WHERE bill_date_key=?", (date_key,))
-        row = c.fetchone()
-        daily_bill_no = (row[0] + 1) if (row and row[0] is not None) else 1
-        
-        c.execute("""INSERT INTO bills (bill_no, bill_date_key, customer_type, customer_name, items, total, paid, time_str)
-                     VALUES (?,?,?,?,?,?,?,?)""",
-                  (daily_bill_no, date_key, b.customer_type, b.customer_name, json.dumps(b.items), b.total, b.paid, time_str))
-        
-        if b.customer_type == "ரெகுலர் கஸ்டமர்" and b.customer_name:
-            c.execute("SELECT id, balance FROM customers WHERE name=?", (b.customer_name.strip(),))
-            cust_row = c.fetchone()
-            if cust_row:
-                cid = cust_row[0]
-                old_bal = cust_row[1]
-                net_add = b.total - b.paid
-                new_bal = old_bal + net_add
-                c.execute("UPDATE customers SET balance=? WHERE id=?", (new_bal, cid))
-                c.execute("""INSERT INTO customer_ledger (customer_id, txn_date, description, debit, credit, balance)
-                             VALUES (?,?,?,?,?,?)""",
-                          (cid, now_ist.strftime("%d-%m-%Y %I:%M:%S %p"), f"பில் எண் #{daily_bill_no}", b.total, b.paid, new_bal))
-            
-        conn.commit()
+    conn = get_db()
+    c = conn.cursor()
+    now_ist = datetime.now(IST)
+    date_key = now_ist.strftime("%Y-%m-%d")
+    time_str = now_ist.strftime("%d-%m-%Y %I:%M:%S %p")
+
+    c.execute("SELECT MAX(bill_no) FROM bills WHERE bill_date_key=%s", (date_key,))
+    row = c.fetchone()
+    daily_bill_no = (row[0] + 1) if (row and row[0] is not None) else 1
+
+    c.execute("""INSERT INTO bills (bill_no, bill_date_key, customer_type, customer_name, items, total, paid, time_str)
+                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+              (daily_bill_no, date_key, b.customer_type, b.customer_name, json.dumps(b.items), b.total, b.paid, time_str))
+
+    if b.customer_type == "ரெகுலர் கஸ்டமர்" and b.customer_name:
+        c.execute("SELECT id, balance FROM customers WHERE LOWER(name)=LOWER(%s)", (b.customer_name.strip(),))
+        cust_row = c.fetchone()
+        if cust_row:
+            cid = cust_row[0]
+            old_bal = float(cust_row[1])
+            net_add = b.total - b.paid
+            new_bal = old_bal + net_add
+            c.execute("UPDATE customers SET balance=%s WHERE id=%s", (new_bal, cid))
+            c.execute("""INSERT INTO customer_ledger (customer_id, txn_date, description, debit, credit, balance)
+                         VALUES (%s,%s,%s,%s,%s,%s)""",
+                      (cid, now_ist.strftime("%d-%m-%Y %I:%M:%S %p"), f"பில் எண் #{daily_bill_no}", b.total, b.paid, new_bal))
+
+    conn.commit()
+    c.close()
+    conn.close()
     return {"status": "ok", "bill_no": daily_bill_no, "time": time_str}
 
 @app.get("/", response_class=HTMLResponse)
@@ -210,23 +260,23 @@ def get_ui():
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
         body { background: #f8fafc; color: #1e293b; padding: 6px; -webkit-tap-highlight-color: transparent; }
         .app-container { max-width: 480px; margin: auto; background: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; }
-        
+
         .header { background: #2563eb; color: #ffffff; padding: 14px 10px; text-align: center; }
         .header h1 { font-size: 1.25rem; font-weight: 800; }
         .header p { font-size: 11px; color: #dbeafe; margin-top: 2px; }
-        
+
         .nav-tabs { display: flex; background: #f1f5f9; padding: 4px; gap: 4px; border-bottom: 1px solid #e2e8f0; }
         .tab-btn { flex: 1; padding: 10px 2px; border: none; background: transparent; font-size: 11px; font-weight: 700; border-radius: 8px; cursor: pointer; color: #64748b; }
         .tab-btn.active { background: #ffffff; color: #2563eb; box-shadow: 0 2px 4px rgba(0,0,0,0.06); }
-        
+
         .view-panel { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
         .hidden { display: none !important; }
-        
+
         .box { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 12px; }
         .input-group { display: flex; gap: 6px; margin-bottom: 6px; }
         input, select { width: 100%; padding: 10px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 13px; font-weight: 600; outline: none; background: #ffffff; color: #1e293b; }
         input:focus, select:focus { border-color: #3b82f6; }
-        
+
         .btn { padding: 10px 14px; border: none; border-radius: 8px; font-weight: 700; font-size: 13px; cursor: pointer; text-align: center; transition: all 0.1s; }
         .btn:active { transform: scale(0.98); }
         .btn-blue { background: #2563eb; color: #ffffff; }
@@ -236,23 +286,23 @@ def get_ui():
         .btn-amber { background: #d97706; color: #ffffff; }
         .btn-soft-amber { background: #fffbeb; color: #d97706; border: 1px solid #fde68a; }
         .btn-red { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
-        
+
         .unit-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; margin: 6px 0; }
         .unit-grid button { padding: 8px 0; border: 1px solid #cbd5e1; background: #ffffff; border-radius: 6px; font-size: 11px; font-weight: 700; cursor: pointer; color: #334155; }
         .unit-grid button:active { background: #dbeafe; color: #1d4ed8; }
-        
+
         table { width: 100%; border-collapse: collapse; font-size: 12px; }
         th, td { padding: 8px 6px; text-align: left; border-bottom: 1px solid #f1f5f9; }
         th { background: #f8fafc; font-weight: 700; color: #475569; }
         .text-right { text-align: right; }
         .text-center { text-align: center; }
-        
+
         .total-box { background: #1e293b; color: #ffffff; padding: 12px; border-radius: 10px; }
         .action-btns { display: flex; gap: 8px; margin-top: 4px; }
-        
+
         .modal { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.5); backdrop-filter: blur(2px); display: flex; align-items: center; justify-content: center; padding: 12px; z-index: 100; }
         .modal-content { background: #ffffff; border-radius: 14px; max-width: 440px; width: 100%; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden; padding: 14px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); }
-        
+
         @media print {
           body * { visibility: hidden; }
           #receipt, #receipt * { visibility: visible; }
@@ -264,10 +314,10 @@ def get_ui():
     </head>
     <body>
       <div class="app-container">
-        
+
         <div class="header">
           <h1>🏪 KSA மளிகை, திருமயம்</h1>
-          <p>அதிவேக மொபைல் பில்லிங் & பாஸ்புக் PDF</p>
+          <p>அதிவேக மொபைல் பில்லிங் (Supabase Cloud Sync)</p>
         </div>
 
         <div class="nav-tabs">
@@ -407,13 +457,11 @@ def get_ui():
                 </div>
                 <button onclick="closePassbook()" class="btn btn-red" style="padding: 4px 8px; font-size: 11px;">✕ Close</button>
               </div>
-              
-              <!-- PDF & Print Buttons inside Passbook -->
+
               <div style="display: flex; gap: 6px; margin-top: 8px;">
                 <button onclick="downloadPassbookPdf()" class="btn btn-soft-amber" style="flex: 1; padding: 8px; font-size: 12px;">📥 பாஸ்புக் PDF (Download)</button>
               </div>
 
-              <!-- Passbook Printable Area -->
               <div id="passbookPrintArea" style="overflow-y: auto; flex: 1; margin-top: 8px; background: #ffffff; padding: 4px;">
                 <div id="pbHeaderPrint" style="display: none; text-align: center; border-bottom: 1px solid #cbd5e1; padding-bottom: 4px; margin-bottom: 6px;">
                   <h2 style="font-size: 14px; font-weight: 900;">KSA மளிகை - கஸ்டமர் பாஸ்புக்</h2>
@@ -494,7 +542,7 @@ def get_ui():
           } else {
             db.customers.forEach(c => {
               sel.innerHTML += `<option value="${c.name}" data-bal="${c.balance}">${c.name}</option>`;
-              paySel.innerHTML += `<option value="${c.id}">${c.name} (பாக்கி: ₹${c.balance})</option>`;
+              paySel.innerHTML += `<option value="${c.id}">${c.name} (பாக்கி: ₹${parseFloat(c.balance).toFixed(2)})</option>`;
             });
           }
           updatePosCustInfo();
@@ -598,11 +646,11 @@ def get_ui():
           let qty = parseFloat(document.getElementById('pQty').value);
           let tot = parseFloat(document.getElementById('pTotalAmt').value);
           if(!name || isNaN(rate) || isNaN(qty) || isNaN(tot)) return alert('விவரங்களை உள்ளிடவும்!');
-          
+
           let displayQty = customDisplayLabel || (qty + ' ' + currentItemUnit);
           cart.push({ name, rate, qty, unit: currentItemUnit, displayQty, tot });
           renderCart();
-          
+
           document.getElementById('pCode').value = '';
           document.getElementById('pName').value = '';
           document.getElementById('pRate').value = '';
@@ -634,7 +682,7 @@ def get_ui():
           let ctype = document.getElementById('custType').value;
           let cname = ctype === 'ரெகுலர் கஸ்டமர்' ? document.getElementById('regularCustSelect').value : 'பொது வாடிக்கையாளர்';
           if(ctype === 'ரெகுலர் கஸ்டமர்' && (!cname || cname === '')) return alert('வாடிக்கையாளரைத் தேர்வு செய்யவும்!');
-          
+
           let total = parseFloat(document.getElementById('billTotal').innerText);
           let paid = parseFloat(document.getElementById('billPaidAmt').value) || 0;
 
@@ -671,7 +719,7 @@ def get_ui():
           }
 
           let receiptElem = document.getElementById('receipt');
-          
+
           if(downloadPdf) {
             receiptElem.style.display = 'block';
             let opt = {
@@ -770,11 +818,11 @@ def get_ui():
           let name = document.getElementById('ncName').value.trim();
           let balance = parseFloat(document.getElementById('ncBal').value) || 0;
           if(!name) return alert('பெயரை உள்ளிடவும்!');
-          
-          let res = await fetch('/api/customer', { 
-            method: 'POST', 
-            headers: {'Content-Type': 'application/json'}, 
-            body: JSON.stringify({id, name, balance}) 
+
+          let res = await fetch('/api/customer', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({id, name, balance})
           });
           let out = await res.json();
           if(out.status === 'exists') alert(out.msg);
@@ -826,7 +874,7 @@ def get_ui():
           document.getElementById('pbCustName').innerText = '🏨 ' + name;
           document.getElementById('pbCustBal').innerText = 'தற்போதைய பாக்கி: ₹' + parseFloat(bal).toFixed(2);
           document.getElementById('pbPrintCustInfo').innerText = `வாடிக்கையாளர்: ${name} | மொத்த பாக்கி: ₹${parseFloat(bal).toFixed(2)}`;
-          
+
           let res = await fetch(`/api/customer/ledger/${cid}`);
           let out = await res.json();
           let rows = '';
@@ -837,9 +885,9 @@ def get_ui():
               rows += `<tr>
                 <td style="color:#64748b; font-size:10px;">${l.txn_date}</td>
                 <td><b>${l.description}</b></td>
-                <td class="text-right" style="color:#dc2626; font-weight:800;">${l.debit > 0 ? '₹'+l.debit.toFixed(2) : '-'}</td>
-                <td class="text-right" style="color:#16a34a; font-weight:800;">${l.credit > 0 ? '₹'+l.credit.toFixed(2) : '-'}</td>
-                <td class="text-right" style="font-weight:900;">₹${l.balance.toFixed(2)}</td>
+                <td class="text-right" style="color:#dc2626; font-weight:800;">${l.debit > 0 ? '₹'+parseFloat(l.debit).toFixed(2) : '-'}</td>
+                <td class="text-right" style="color:#16a34a; font-weight:800;">${l.credit > 0 ? '₹'+parseFloat(l.credit).toFixed(2) : '-'}</td>
+                <td class="text-right" style="font-weight:900;">₹${parseFloat(l.balance).toFixed(2)}</td>
               </tr>`;
             });
           }
@@ -855,7 +903,7 @@ def get_ui():
           let printHeader = document.getElementById('pbHeaderPrint');
           printHeader.style.display = 'block';
           let element = document.getElementById('passbookPrintArea');
-          
+
           let opt = {
             margin: 4,
             filename: `Passbook_${currentOpenCust.name}.pdf`,
@@ -863,7 +911,7 @@ def get_ui():
             html2canvas: { scale: 2 },
             jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
           };
-          
+
           html2pdf().set(opt).from(element).save().then(() => {
             printHeader.style.display = 'none';
           });
@@ -898,7 +946,7 @@ def get_ui():
               h += `<div style="background:#ffffff; padding:10px; border-radius:8px; border:1px solid #e2e8f0; font-size:12px;">
                       <div style="display:flex; justify-content:space-between; font-weight:800;">
                         <span>பில் #${b.bill_no} (${b.customer_name})</span>
-                        <span style="color:#2563eb;">₹${b.total.toFixed(2)}</span>
+                        <span style="color:#2563eb;">₹${parseFloat(b.total).toFixed(2)}</span>
                       </div>
                       <div style="font-size:11px; color:#64748b; margin-top:3px;">${b.time_str}</div>
                       <div style="display:flex; gap:6px; margin-top:8px;">
