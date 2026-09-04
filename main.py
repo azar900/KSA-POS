@@ -23,7 +23,8 @@ DB_FILE = "test_store.db"
 
 def get_db():
     if USE_POSTGRES:
-        return psycopg2.connect(RAW_DB_URL)
+        conn = psycopg2.connect(RAW_DB_URL)
+        return conn
     else:
         import sqlite3
         conn = sqlite3.connect(DB_FILE, timeout=20.0)
@@ -72,26 +73,43 @@ def init_db():
     conn = None
     try:
         conn = get_db()
-        c = conn.cursor()
         if USE_POSTGRES:
-            c.execute("""CREATE TABLE IF NOT EXISTS products 
-                         (code INTEGER PRIMARY KEY, name TEXT, print_name TEXT, unit TEXT, price NUMERIC)""")
-            # print_name இல்லையென்றால் சேர்க்கும் ஆட்டோ மைக்ரேஷன்
-            c.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS print_name TEXT;")
+            conn.autocommit = True
+            c = conn.cursor()
             
-            c.execute("""CREATE TABLE IF NOT EXISTS customers 
-                         (id SERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, balance NUMERIC DEFAULT 0.0)""")
-            c.execute("""CREATE TABLE IF NOT EXISTS customer_ledger 
-                         (id SERIAL PRIMARY KEY, customer_id INTEGER REFERENCES customers(id) ON DELETE CASCADE, 
-                          txn_date TEXT, description TEXT, debit NUMERIC DEFAULT 0.0, credit NUMERIC DEFAULT 0.0, balance NUMERIC DEFAULT 0.0)""")
-            c.execute("""CREATE TABLE IF NOT EXISTS bills 
-                         (id SERIAL PRIMARY KEY, bill_no INTEGER, bill_date_key TEXT, customer_type TEXT, 
-                          customer_name TEXT, items TEXT, total NUMERIC, paid NUMERIC DEFAULT 0.0, time_str TEXT)""")
-            
-            # 1000-க்கு மேல் ஏதேனும் டெஸ்ட் கோட் இருந்தால் கிளீன் செய்யும்
-            c.execute("DELETE FROM products WHERE code >= 1000;")
-            
-            # Default products starting at 101
+            # 1. Products Table
+            try:
+                c.execute("""CREATE TABLE IF NOT EXISTS products 
+                             (code INTEGER PRIMARY KEY, name TEXT, print_name TEXT, unit TEXT, price NUMERIC)""")
+                c.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS print_name TEXT;")
+                c.execute("DELETE FROM products WHERE code >= 1000;")
+            except Exception as pe:
+                print("Products table init note:", pe)
+
+            # 2. Customers Table
+            try:
+                c.execute("""CREATE TABLE IF NOT EXISTS customers 
+                             (id SERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, balance NUMERIC DEFAULT 0.0)""")
+            except Exception as ce:
+                print("Customers table init note:", ce)
+
+            # 3. Customer Ledger (Passbook) Table - சுயாதீனமான உருவாக்கம்
+            try:
+                c.execute("""CREATE TABLE IF NOT EXISTS customer_ledger 
+                             (id SERIAL PRIMARY KEY, customer_id INTEGER, 
+                              txn_date TEXT, description TEXT, debit NUMERIC DEFAULT 0.0, credit NUMERIC DEFAULT 0.0, balance NUMERIC DEFAULT 0.0)""")
+            except Exception as le:
+                print("Ledger table init note:", le)
+
+            # 4. Bills Table
+            try:
+                c.execute("""CREATE TABLE IF NOT EXISTS bills 
+                             (id SERIAL PRIMARY KEY, bill_no INTEGER, bill_date_key TEXT, customer_type TEXT, 
+                              customer_name TEXT, items TEXT, total NUMERIC, paid NUMERIC DEFAULT 0.0, time_str TEXT)""")
+            except Exception as be:
+                print("Bills table init note:", be)
+
+            # 5. Sample Products
             sample_prods = [
                 (101, 'seeragam', 'சீரகம்', 'Kg', 600.0),
                 (102, 'milagu', 'மிளகு', 'Kg', 900.0),
@@ -102,12 +120,15 @@ def init_db():
                 (107, 'ponni arisi sippam', 'பொன்னி அரிசி (சிப்பம்)', 'Pcs', 1350.0)
             ]
             for p in sample_prods:
-                c.execute("""INSERT INTO products (code, name, print_name, unit, price) 
-                             VALUES (%s, %s, %s, %s, %s) ON CONFLICT (code) DO NOTHING""", p)
-            
-            conn.commit()
-            print("🚀 Supabase PostgreSQL Connected & Cleaned!")
+                try:
+                    c.execute("""INSERT INTO products (code, name, print_name, unit, price) 
+                                 VALUES (%s, %s, %s, %s, %s) ON CONFLICT (code) DO NOTHING""", p)
+                except Exception:
+                    pass
+            c.close()
+            print("🚀 Supabase PostgreSQL Tables Initialized Individually!")
         else:
+            c = conn.cursor()
             c.execute("""CREATE TABLE IF NOT EXISTS products 
                          (code INTEGER PRIMARY KEY, name TEXT, print_name TEXT, unit TEXT, price REAL)""")
             c.execute("""CREATE TABLE IF NOT EXISTS customers 
@@ -131,10 +152,8 @@ def init_db():
             for p in sample_prods:
                 c.execute("INSERT OR IGNORE INTO products (code, name, print_name, unit, price) VALUES (?, ?, ?, ?, ?)", p)
             conn.commit()
-            print("💻 Local SQLite Connected!")
-        c.close()
+            c.close()
     except Exception as e:
-        if conn: conn.rollback()
         print("DB Init Info:", e)
     finally:
         if conn: conn.close()
@@ -169,9 +188,27 @@ def get_bills_by_date(date_str: str):
     except Exception as e:
         return {"status": "error", "msg": str(e), "bills": []}
 
+# பாஸ்புக் அழைக்கும்போதே டேபிள் இல்லையென்றால் தானாகவே உருவாக்கும் சுய-சரிசெய்தல்
 @app.get("/api/customer/ledger/{cid}")
 def get_customer_ledger(cid: int):
     try:
+        # டேபிள் இருக்கிறதா எனப் பார்த்து இல்லையென்றால் உடனடியாக உருவாக்கும்
+        if USE_POSTGRES:
+            execute_query("""CREATE TABLE IF NOT EXISTS customer_ledger 
+                             (id SERIAL PRIMARY KEY, customer_id INTEGER, 
+                              txn_date TEXT, description TEXT, debit NUMERIC DEFAULT 0.0, credit NUMERIC DEFAULT 0.0, balance NUMERIC DEFAULT 0.0)""", commit=True)
+            
+            # வாடிக்கையாளருக்கு பதிவேதும் இல்லையென்றால் தற்போதைய இருப்பை தொடக்க இருப்பாக இணைக்கும்
+            check = execute_query("SELECT id FROM customer_ledger WHERE customer_id=%s LIMIT 1", (cid,), fetch_one=True)
+            if not check:
+                cust = execute_query("SELECT name, balance FROM customers WHERE id=%s", (cid,), fetch_one=True)
+                if cust:
+                    now_str = datetime.now(IST).strftime("%d-%m-%Y %I:%M %p")
+                    bal = float(cust.get('balance', 0.0))
+                    execute_query("""INSERT INTO customer_ledger (customer_id, txn_date, description, debit, credit, balance)
+                                     VALUES (%s, %s, %s, %s, %s, %s)""", 
+                                  (cid, now_str, "தொடக்க இருப்பு", bal, 0.0, bal), commit=True)
+
         ledger = execute_query("""SELECT txn_date, description, debit, credit, balance 
                                   FROM customer_ledger WHERE customer_id=? ORDER BY id DESC""", (cid,), fetch_all=True)
         return {"status": "ok", "ledger": ledger or []}
@@ -218,30 +255,41 @@ def save_customer(cu: CustomerModel):
     conn = None
     try:
         conn = get_db()
-        c = conn.cursor()
         now_str = datetime.now(IST).strftime("%d-%m-%Y %I:%M %p")
         c_name = cu.name.strip()
         
-        check_q = "SELECT id FROM customers WHERE LOWER(name)=LOWER(%s)" if USE_POSTGRES else "SELECT id FROM customers WHERE LOWER(name)=LOWER(?)"
-        c.execute(check_q, (c_name,))
-        if c.fetchone():
-            return {"status": "exists", "msg": f"'{c_name}' பெயரில் ஏற்கெனவே கணக்கு உள்ளது!"}
-        
         if USE_POSTGRES:
+            conn.autocommit = True
+            c = conn.cursor()
+            c.execute("""CREATE TABLE IF NOT EXISTS customers 
+                         (id SERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, balance NUMERIC DEFAULT 0.0)""")
+            c.execute("""CREATE TABLE IF NOT EXISTS customer_ledger 
+                         (id SERIAL PRIMARY KEY, customer_id INTEGER, 
+                          txn_date TEXT, description TEXT, debit NUMERIC DEFAULT 0.0, credit NUMERIC DEFAULT 0.0, balance NUMERIC DEFAULT 0.0)""")
+            
+            c.execute("SELECT id FROM customers WHERE LOWER(name)=LOWER(%s)", (c_name,))
+            if c.fetchone():
+                return {"status": "exists", "msg": f"'{c_name}' பெயரில் ஏற்கெனவே கணக்கு உள்ளது!"}
+            
             c.execute("INSERT INTO customers (name, balance) VALUES (%s, %s) RETURNING id", (c_name, cu.balance))
             new_cid = c.fetchone()[0]
             c.execute("""INSERT INTO customer_ledger (customer_id, txn_date, description, debit, credit, balance) 
                          VALUES (%s, %s, %s, %s, %s, %s)""", (new_cid, now_str, "தொடக்க இருப்பு", cu.balance, 0.0, cu.balance))
+            c.close()
         else:
+            c = conn.cursor()
+            c.execute("SELECT id FROM customers WHERE LOWER(name)=LOWER(?)", (c_name,))
+            if c.fetchone():
+                return {"status": "exists", "msg": f"'{c_name}' பெயரில் ஏற்கெனவே கணக்கு உள்ளது!"}
             c.execute("INSERT INTO customers (name, balance) VALUES (?, ?)", (c_name, cu.balance))
             new_cid = c.lastrowid
             c.execute("""INSERT INTO customer_ledger (customer_id, txn_date, description, debit, credit, balance) 
                          VALUES (?, ?, ?, ?, ?, ?)""", (new_cid, now_str, "தொடக்க இருப்பு", cu.balance, 0.0, cu.balance))
+            conn.commit()
+            c.close()
         
-        conn.commit()
         return {"status": "ok"}
     except Exception as e:
-        if conn: conn.rollback()
         return {"status": "error", "msg": str(e)}
     finally:
         if conn: conn.close()
@@ -306,15 +354,17 @@ def save_bill(b: BillRequest):
     conn = None
     try:
         conn = get_db()
-        c = conn.cursor()
         now_ist = datetime.now(IST)
         date_key = now_ist.strftime("%Y-%m-%d")
         time_str = now_ist.strftime("%d-%m-%Y %I:%M %p")
         param = "%s" if USE_POSTGRES else "?"
         
         if USE_POSTGRES:
+            conn.autocommit = True
+            c = conn.cursor()
             c.execute("SELECT pg_advisory_xact_lock(42);")
         else:
+            c = conn.cursor()
             c.execute("BEGIN IMMEDIATE")
             
         c.execute(f"SELECT MAX(bill_no) FROM bills WHERE bill_date_key={param}", (date_key,))
@@ -327,7 +377,8 @@ def save_bill(b: BillRequest):
                      VALUES ({param}, {param}, {param}, {param}, {param}, {param}, {param}, {param})""",
                   (daily_bill_no, date_key, b.customer_type, b.customer_name, items_json, b.total, b.paid, time_str))
         
-        if b.customer_type == "ரெகுலர் கஸ்டமர் (Credit)" and b.customer_name:
+        # ரெகுலர் கஸ்டமர் என்றால் பாஸ்புக்கில் பில் தொகை ஏற்றுதல்
+        if "Credit" in b.customer_type and b.customer_name:
             c.execute(f"SELECT id, balance FROM customers WHERE LOWER(name)=LOWER({param})", (b.customer_name.strip(),))
             cust_row = c.fetchone()
             if cust_row:
@@ -341,10 +392,12 @@ def save_bill(b: BillRequest):
                              VALUES ({param}, {param}, {param}, {param}, {param}, {param})""", 
                           (cid, time_str, f"பில் எண் #{daily_bill_no}", b.total, b.paid, new_bal))
                 
-        conn.commit()
+        if not USE_POSTGRES:
+            conn.commit()
+            
         return {"status": "ok", "bill_no": daily_bill_no, "date_key": date_key, "time": time_str}
     except Exception as e:
-        if conn: conn.rollback()
+        if conn and not USE_POSTGRES: conn.rollback()
         return {"status": "error", "msg": str(e)}
     finally:
         if conn: conn.close()
@@ -402,6 +455,7 @@ def get_ui():
         .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; padding: 8px; z-index: 100; }
         .modal-card { background: #ffffff; border-radius: 10px; max-width: 440px; width: 100%; max-height: 90vh; display: flex; flex-direction: column; padding: 12px; overflow: hidden; }
 
+        /* புளூடூத் தெர்மல் அச்சு வடிவமைப்பு */
         @media print {
           body * { visibility: hidden; }
           #receipt, #receipt * { visibility: visible; }
@@ -528,7 +582,7 @@ def get_ui():
           </div>
         </div>
 
-        <!-- 2. PRODUCTS TAB (STRICT 101+ AUTO CODE LOGIC) -->
+        <!-- 2. PRODUCTS TAB -->
         <div id="viewProds" class="view-panel hidden">
           <div class="box" style="background: #f0fdf4; border-color: #bbf7d0;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
@@ -599,7 +653,7 @@ def get_ui():
           
           <div id="ledgerList" style="display: flex; flex-direction: column; gap: 5px; max-height: 260px; overflow-y: auto;"></div>
 
-          <!-- Passbook Modal -->
+          <!-- Passbook Modal (பாஸ்புக் விவரம் & அச்சு) -->
           <div id="passbookModal" class="modal-overlay hidden">
             <div class="modal-card">
               <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px;">
@@ -611,7 +665,7 @@ def get_ui():
               </div>
 
               <div style="display: flex; gap: 5px; margin: 8px 0;">
-                <button onclick="window.print()" class="btn btn-blue" style="flex: 1; padding: 6px; font-size: 12px; min-height: 34px;">🖨️ பிரிண்ட்</button>
+                <button onclick="printPassbookThermal()" class="btn btn-blue" style="flex: 1; padding: 6px; font-size: 12px; min-height: 34px;">🖨️ பிரிண்ட்</button>
                 <button onclick="downloadPassbookPdf()" class="btn btn-soft-amber" style="flex: 1; padding: 6px; font-size: 12px; min-height: 34px;">📥 A4 PDF</button>
               </div>
 
@@ -630,8 +684,8 @@ def get_ui():
                     <tr style="border-bottom: 1px solid #000;">
                       <th style="font-size: 11px; color:#000 !important; background:transparent !important;">தேதி</th>
                       <th style="font-size: 11px; color:#000 !important; background:transparent !important;">விவரம்</th>
-                      <th class="text-right" style="font-size: 11px; color:#000 !important; background:transparent !important;">Dr</th>
-                      <th class="text-right" style="font-size: 11px; color:#000 !important; background:transparent !important;">Cr</th>
+                      <th class="text-right" style="font-size: 11px; color:#000 !important; background:transparent !important;">பில்</th>
+                      <th class="text-right" style="font-size: 11px; color:#000 !important; background:transparent !important;">வரவு</th>
                       <th class="text-right" style="font-size: 11px; color:#000 !important; background:transparent !important;">இருப்பு</th>
                     </tr>
                   </thead>
@@ -740,6 +794,7 @@ def get_ui():
         let cashCustTransliterateTimer = null;
         let posSearchTransliterateTimer = null;
         let activePbCustomer = null;
+        let activePbLedger = [];
 
         function getTodayDateStr() {
           let now = new Date();
@@ -951,7 +1006,7 @@ def get_ui():
           let regPaidRow = document.getElementById('regularPaidRow');
           let cashNameInput = document.getElementById('cashCustNameInput');
           
-          if (ctype === 'ரெகுலர் கஸ்டமர் (Credit)') {
+          if (ctype.includes('Credit')) {
             regDiv.classList.remove('hidden');
             regPaidRow.classList.remove('hidden');
             regPaidRow.style.display = 'flex';
@@ -971,7 +1026,7 @@ def get_ui():
           let ctype = document.getElementById('custType').value;
           let cname = '';
 
-          if (ctype === 'ரெகுலர் கஸ்டமர் (Credit)') {
+          if (ctype.includes('Credit')) {
             cname = document.getElementById('regularCustSelect').value;
             if (!cname) return alert('வாடிக்கையாளரைத் தேர்வு செய்யவும்!');
           } else {
@@ -980,7 +1035,7 @@ def get_ui():
           }
 
           let total = parseFloat(document.getElementById('billTotal').innerText);
-          let paid = (ctype === 'வாடிக்கையாளர் (Cash)') ? total : (parseFloat(document.getElementById('billPaidAmt').value) || 0);
+          let paid = (!ctype.includes('Credit')) ? total : (parseFloat(document.getElementById('billPaidAmt').value) || 0);
 
           try {
             let res = await fetch('/api/bill', {
@@ -1014,7 +1069,7 @@ def get_ui():
           document.getElementById('rTime').innerText = timeStr;
           
           let custDisplay = cname;
-          if (ctype === 'ரெகுலர் கஸ்டமர் (Credit)') {
+          if (ctype.includes('Credit')) {
             custDisplay += ' (Credit Bill)';
           }
           document.getElementById('rCust').innerText = custDisplay;
@@ -1031,7 +1086,7 @@ def get_ui():
           document.getElementById('rTotal').innerText = total;
           
           let paidRow = document.getElementById('rPaidRow');
-          if (ctype === 'ரெகுலர் கஸ்டமர் (Credit)' && paid > 0) {
+          if (ctype.includes('Credit') && paid > 0) {
             paidRow.style.display = 'flex';
             document.getElementById('rPaid').innerText = paid;
           } else {
@@ -1056,12 +1111,11 @@ def get_ui():
           }
         }
 
-        /* ==================== PRODUCTS TAB (STRICT 101, 102... SYSTEM) ==================== */
+        /* ==================== PRODUCTS TAB (101, 102... STRICT LOGIC) ==================== */
         function setNextProductCode() {
           let editBadge = document.getElementById('prodEditBadge');
           if (editBadge && !editBadge.classList.contains('hidden')) return;
           
-          // எண்களை 101 முதல் 999 வரை மட்டும் வரிசைப்படுத்தும் துல்லியமான முறை
           let validCodes = db.products
             .map(p => parseInt(p.code))
             .filter(c => !isNaN(c) && c >= 101 && c < 1000);
@@ -1280,13 +1334,8 @@ def get_ui():
           if (!confirm(`'${name}' வாடிக்கையாளரையும் அவரது கணக்குகளையும் நீக்கவா?`)) return;
           try {
             let res = await fetch(`/api/customer/${cid}`, { method: 'DELETE' });
-            let out = await res.json();
-            if (out.status === 'ok') {
-              await fetchAll();
-              alert('வாடிக்கையாளர் நீக்கப்பட்டார்!');
-            } else {
-              alert('நீக்குவதில் பிழை: ' + out.msg);
-            }
+            await fetchAll();
+            alert('வாடிக்கையாளர் நீக்கப்பட்டார்!');
           } catch(err) {
             alert('சர்வர் பிழை: ' + err);
           }
@@ -1324,13 +1373,14 @@ def get_ui():
             h = '<p style="text-align:center; font-size:12px; color:#64748b; padding:15px;">வாடிக்கையாளர்கள் இல்லை.</p>';
           } else {
             db.customers.forEach(c => {
+              let safeName = encodeURIComponent(c.name);
               h += `<div style="display:flex; justify-content:space-between; align-items:center; background:#ffffff; padding:8px 10px; border-radius:6px; border:1px solid #cbd5e1; font-size:13px; font-weight:700; margin-bottom:5px;">
-                      <div onclick="openPassbook(${c.id}, '${c.name}', ${c.balance})" style="flex:1; cursor:pointer;">
+                      <div onclick="openPassbook(${c.id}, decodeURIComponent('${safeName}'), ${c.balance})" style="flex:1; cursor:pointer;">
                         <span style="font-size:13.5px; color:#1e3a8a;">🏨 ${c.name}</span>
                         <div style="color:#1e40af; font-size:11.5px; margin-top:1px;">கணக்கு இருப்பு: ₹${parseFloat(c.balance).toFixed(2)} ➡️</div>
                       </div>
                       <div>
-                        <button onclick="deleteCustomer(${c.id}, '${c.name}')" title="நீக்கு" style="border:none; background:#fee2e2; color:#dc2626; font-size:14px; font-weight:900; padding:6px 10px; border-radius:6px; cursor:pointer;">❌</button>
+                        <button onclick="deleteCustomer(${c.id}, decodeURIComponent('${safeName}'))" title="நீக்கு" style="border:none; background:#fee2e2; color:#dc2626; font-size:14px; font-weight:900; padding:6px 10px; border-radius:6px; cursor:pointer;">❌</button>
                       </div>
                     </div>`;
             });
@@ -1347,11 +1397,11 @@ def get_ui():
 
           fetch(`/api/customer/ledger/${cid}`).then(r => r.json()).then(out => {
             let rows = '';
-            let ledgerData = out.ledger || [];
-            if (ledgerData.length === 0) {
+            activePbLedger = out.ledger || [];
+            if (activePbLedger.length === 0) {
               rows = '<tr><td colspan="5" class="text-center" style="padding:12px; color:#000;">பரிவர்த்தனை ஏதும் இல்லை</td></tr>';
             } else {
-              ledgerData.forEach(l => {
+              activePbLedger.forEach(l => {
                 rows += `<tr>
                   <td style="color:#000; font-size:10px;">${l.txn_date}</td>
                   <td style="color:#000; font-size:11px;"><b>${l.description}</b></td>
@@ -1370,6 +1420,28 @@ def get_ui():
           document.getElementById('passbookModal').classList.add('hidden');
         }
 
+        function printPassbookThermal() {
+          if (!activePbCustomer) return;
+          document.getElementById('rBillNo').innerText = 'PASSBOOK';
+          document.getElementById('rTime').innerText = getTodayDateStr();
+          document.getElementById('rCust').innerText = activePbCustomer.name;
+          
+          let rRows = '';
+          activePbLedger.slice(0, 10).forEach(l => {
+            let desc = l.description.length > 14 ? l.description.substring(0,14)+'..' : l.description;
+            let amt = l.debit > 0 ? `+₹${parseFloat(l.debit).toFixed(0)}` : `-₹${parseFloat(l.credit).toFixed(0)}`;
+            rRows += `<tr>
+              <td class="col-item">${desc}</td>
+              <td class="col-qty">${l.txn_date.split(' ')[0]}</td>
+              <td class="col-amt">${amt}</td>
+            </tr>`;
+          });
+          document.getElementById('rItems').innerHTML = rRows;
+          document.getElementById('rTotal').innerText = parseFloat(activePbCustomer.bal).toFixed(2);
+          document.getElementById('rPaidRow').style.display = 'none';
+          window.print();
+        }
+
         function downloadPassbookPdf() {
           let element = document.getElementById('passbookPrintArea');
           let opt = {
@@ -1382,7 +1454,7 @@ def get_ui():
           html2pdf().set(opt).from(element).save();
         }
 
-        /* ==================== ZERO-LAG HISTORY & TAP-TO-PREVIEW ==================== */
+        /* ==================== ZERO-LAG HISTORY & PREVIEW ==================== */
         async function loadHistoryByDate(dateStr) {
           if (!dateStr) return;
           let listDiv = document.getElementById('billHistoryList');
