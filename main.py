@@ -76,6 +76,9 @@ def init_db():
         if USE_POSTGRES:
             c.execute("""CREATE TABLE IF NOT EXISTS products 
                          (code INTEGER PRIMARY KEY, name TEXT, print_name TEXT, unit TEXT, price NUMERIC)""")
+            # print_name இல்லையென்றால் சேர்க்கும் ஆட்டோ மைக்ரேஷன்
+            c.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS print_name TEXT;")
+            
             c.execute("""CREATE TABLE IF NOT EXISTS customers 
                          (id SERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, balance NUMERIC DEFAULT 0.0)""")
             c.execute("""CREATE TABLE IF NOT EXISTS customer_ledger 
@@ -84,8 +87,26 @@ def init_db():
             c.execute("""CREATE TABLE IF NOT EXISTS bills 
                          (id SERIAL PRIMARY KEY, bill_no INTEGER, bill_date_key TEXT, customer_type TEXT, 
                           customer_name TEXT, items TEXT, total NUMERIC, paid NUMERIC DEFAULT 0.0, time_str TEXT)""")
+            
+            # 1000-க்கு மேல் ஏதேனும் டெஸ்ட் கோட் இருந்தால் கிளீன் செய்யும்
+            c.execute("DELETE FROM products WHERE code >= 1000;")
+            
+            # Default products starting at 101
+            sample_prods = [
+                (101, 'seeragam', 'சீரகம்', 'Kg', 600.0),
+                (102, 'milagu', 'மிளகு', 'Kg', 900.0),
+                (103, 'kadalai ennai', 'கடலை எண்ணெய்', 'L', 180.0),
+                (104, 'jeeni', 'சீனி', 'Kg', 42.0),
+                (105, 'colgate paste', 'கோல்கேட் பேஸ்ட்', 'Pcs', 45.0),
+                (106, 'ponni arisi', 'பொன்னி அரிசி', 'Kg', 55.0),
+                (107, 'ponni arisi sippam', 'பொன்னி அரிசி (சிப்பம்)', 'Pcs', 1350.0)
+            ]
+            for p in sample_prods:
+                c.execute("""INSERT INTO products (code, name, print_name, unit, price) 
+                             VALUES (%s, %s, %s, %s, %s) ON CONFLICT (code) DO NOTHING""", p)
+            
             conn.commit()
-            print("🚀 Supabase PostgreSQL Connected!")
+            print("🚀 Supabase PostgreSQL Connected & Cleaned!")
         else:
             c.execute("""CREATE TABLE IF NOT EXISTS products 
                          (code INTEGER PRIMARY KEY, name TEXT, print_name TEXT, unit TEXT, price REAL)""")
@@ -123,7 +144,7 @@ init_db()
 @app.get("/api/data")
 def get_data():
     try:
-        products = execute_query("SELECT code, name, COALESCE(print_name, name) as print_name, unit, price FROM products ORDER BY code ASC", fetch_all=True)
+        products = execute_query("SELECT code, name, COALESCE(print_name, name) as print_name, unit, price FROM products WHERE code < 1000 ORDER BY code ASC", fetch_all=True)
         customers = execute_query("SELECT id, name, balance FROM customers ORDER BY name ASC", fetch_all=True)
         return {"status": "ok", "products": products or [], "customers": customers or []}
     except Exception as e:
@@ -280,7 +301,6 @@ class BillRequest(BaseModel):
     total: float
     paid: float
 
-# Concurrency Lock
 @app.post("/api/bill")
 def save_bill(b: BillRequest):
     conn = None
@@ -382,7 +402,6 @@ def get_ui():
         .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; padding: 8px; z-index: 100; }
         .modal-card { background: #ffffff; border-radius: 10px; max-width: 440px; width: 100%; max-height: 90vh; display: flex; flex-direction: column; padding: 12px; overflow: hidden; }
 
-        /* புளூடூத் தெர்மல் அச்சு வடிவமைப்பு */
         @media print {
           body * { visibility: hidden; }
           #receipt, #receipt * { visibility: visible; }
@@ -458,7 +477,6 @@ def get_ui():
           <div class="box">
             <div class="input-group">
               <input type="number" id="posCode" placeholder="Code" style="flex: 0.8; text-align: center; font-size: 15px; font-weight: 800;" oninput="onPosCodeInput()">
-              <!-- தங்கிலீஷ் $\rightarrow$ தமிழ் தேடல் பார் -->
               <input type="text" id="posSearch" placeholder="🔍 தேடல் (seeragam, ponni...)" style="flex: 2.2;" oninput="handlePosSmartSearch(this.value)" autocomplete="off">
             </div>
 
@@ -510,7 +528,7 @@ def get_ui():
           </div>
         </div>
 
-        <!-- 2. PRODUCTS TAB -->
+        <!-- 2. PRODUCTS TAB (STRICT 101+ AUTO CODE LOGIC) -->
         <div id="viewProds" class="view-panel hidden">
           <div class="box" style="background: #f0fdf4; border-color: #bbf7d0;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
@@ -624,13 +642,13 @@ def get_ui():
           </div>
         </div>
 
-        <!-- 4. HISTORY TAB (INSTANT SEARCH & TAP-TO-PREVIEW) -->
+        <!-- 4. HISTORY TAB -->
         <div id="viewHistory" class="view-panel hidden">
           <div class="box" style="background: #eff6ff; border-color: #bfdbfe; padding: 6px;">
             <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px;">
               <span style="font-size: 12px; font-weight: 800; color: #1e40af;">📅 தேதி:</span>
               <input type="date" id="historyDatePicker" style="flex: 1; padding: 4px 8px; font-size: 13px; height: 36px;" onchange="loadHistoryByDate(this.value)">
-              <button onclick="loadHistoryByDate(document.getElementById('historyDatePicker').value)" class="btn btn-soft-blue" style="padding: 4px 10px; min-height: 36px;" title="புதுப்பி (Refresh)">🔄</button>
+              <button onclick="loadHistoryByDate(document.getElementById('historyDatePicker').value)" class="btn btn-soft-blue" style="padding: 4px 10px; min-height: 36px;" title="புதுப்பி">🔄</button>
             </div>
             <div style="margin-top: 5px;">
               <input type="text" id="historySearchInput" placeholder="🔍 பில் எண் அல்லது பெயர் தேட..." oninput="filterHistoryList(this.value)" style="height: 36px; font-size: 13px;">
@@ -646,7 +664,7 @@ def get_ui():
         </div>
       </div>
 
-      <!-- Bill Items Preview Modal -->
+      <!-- Bill Preview Modal -->
       <div id="billPreviewModal" class="modal-overlay hidden">
         <div class="modal-card">
           <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px;">
@@ -682,12 +700,10 @@ def get_ui():
         </div>
       </div>
 
-      <!-- Thermal Receipt (Crystal Clear, Header-Only Bold & No Ugly Overlaps) -->
+      <!-- Thermal Receipt -->
       <div id="receipt" style="display: none; background: #ffffff; padding: 2px 4px; width: 72mm; color: #000000;">
-        <!-- கடை பெயர் மட்டும் எடுப்பாகவும் பெரியதாகவும் -->
         <div style="text-align: center; font-size: 15px; font-weight: bold; color: #000000; letter-spacing: 0.5px;">KSA மளிகை, திருமயம்</div>
         <div class="border-b"></div>
-        <!-- பில் விவரங்கள் சீரான நேர்த்தியான எழுத்துக்களில் -->
         <div style="display: flex; justify-content: space-between; font-size: 11.5px;"><span>பில் எண்: <span id="rBillNo"></span></span></div>
         <div style="display: flex; justify-content: space-between; font-size: 11px;"><span>தேதி: <span id="rTime"></span></span></div>
         <div style="font-size: 11.5px; margin-top: 1px;">கஸ்டமர்: <span id="rCust"></span></div>
@@ -777,7 +793,6 @@ def get_ui():
           if (p) selectPosProduct(p);
         }
 
-        /* தங்கிலீஷ் $\rightarrow$ தமிழ் தேடல் & உடனடி பரிந்துரை */
         function handlePosSmartSearch(val) {
           let q = val.trim().toLowerCase();
           let suggestBox = document.getElementById('posSuggestions');
@@ -1041,16 +1056,21 @@ def get_ui():
           }
         }
 
-        /* ==================== PRODUCTS TAB ==================== */
+        /* ==================== PRODUCTS TAB (STRICT 101, 102... SYSTEM) ==================== */
         function setNextProductCode() {
           let editBadge = document.getElementById('prodEditBadge');
           if (editBadge && !editBadge.classList.contains('hidden')) return;
-          let maxCode = 100;
-          db.products.forEach(p => {
-            let c = parseInt(p.code);
-            if (!isNaN(c) && c > maxCode) maxCode = c;
-          });
-          document.getElementById('npCode').value = maxCode + 1;
+          
+          // எண்களை 101 முதல் 999 வரை மட்டும் வரிசைப்படுத்தும் துல்லியமான முறை
+          let validCodes = db.products
+            .map(p => parseInt(p.code))
+            .filter(c => !isNaN(c) && c >= 101 && c < 1000);
+            
+          let nextCode = 101;
+          if (validCodes.length > 0) {
+            nextCode = Math.max(...validCodes) + 1;
+          }
+          document.getElementById('npCode').value = nextCode;
         }
 
         function onTanglishType(val) {
