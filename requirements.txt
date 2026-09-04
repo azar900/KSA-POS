@@ -2,4 +2,4 @@ fastapi
 uvicorn
 pytz
 psycopg2-binary
-pandas 
+pydantic
