@@ -1,40 +1,41 @@
 import os
 import json
-import sqlite3
 from datetime import datetime
-from typing import Any
 import pytz
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-try:
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-except ImportError:
-    psycopg2 = None
-    RealDictCursor = None
-
 app = FastAPI()
 IST = pytz.timezone('Asia/Kolkata')
 
 RAW_DB_URL = os.getenv("DATABASE_URL", "").strip()
-USE_POSTGRES = bool(RAW_DB_URL and "YOUR_USER" not in RAW_DB_URL and RAW_DB_URL.startswith("postgres") and psycopg2 is not None)
+USE_POSTGRES = bool(RAW_DB_URL and "YOUR_USER" not in RAW_DB_URL and RAW_DB_URL.startswith("postgres"))
+
+if USE_POSTGRES:
+    try:
+        import psycopg2
+        from psycopg2.extras import RealDictCursor
+    except ImportError:
+        USE_POSTGRES = False
+
 DB_FILE = "test_store.db"
 
-def get_db() -> Any:
-    if USE_POSTGRES and psycopg2 is not None:
+def get_db():
+    if USE_POSTGRES:
         return psycopg2.connect(RAW_DB_URL)
-    conn = sqlite3.connect(DB_FILE, timeout=20.0)
-    conn.row_factory = sqlite3.Row
-    return conn
+    else:
+        import sqlite3
+        conn = sqlite3.connect(DB_FILE, timeout=20.0)
+        conn.row_factory = sqlite3.Row
+        return conn
 
-def execute_query(query: str, params: tuple = (), fetch_one: bool = False, fetch_all: bool = False, commit: bool = False) -> Any:
+def execute_query(query, params=(), fetch_one=False, fetch_all=False, commit=False):
     conn = None
     try:
         conn = get_db()
-        if USE_POSTGRES and RealDictCursor is not None:
-            c = conn.cursor(cursor_factory=RealDictCursor)
+        if USE_POSTGRES:
+            c = conn.cursor(cursor_factory=RealDictCursor)  # type: ignore
             pg_query = query.replace("?", "%s")
             c.execute(pg_query, params)
             data = None
@@ -58,10 +59,9 @@ def execute_query(query: str, params: tuple = (), fetch_one: bool = False, fetch
                 data = [dict(r) for r in c.fetchall()]
             if commit:
                 conn.commit()
-            c.close()
             return data
     except Exception as e:
-        if conn and commit and not getattr(conn, "autocommit", False):
+        if conn and commit:
             conn.rollback()
         raise e
     finally:
@@ -72,43 +72,21 @@ def init_db():
     conn = None
     try:
         conn = get_db()
+        c = conn.cursor()
         if USE_POSTGRES:
-            conn.autocommit = True
-            c = conn.cursor()
             c.execute("""CREATE TABLE IF NOT EXISTS products 
                          (code INTEGER PRIMARY KEY, name TEXT, print_name TEXT, unit TEXT, price NUMERIC)""")
-            c.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS print_name TEXT;")
-            c.execute("DELETE FROM products WHERE code >= 1000;")
-
             c.execute("""CREATE TABLE IF NOT EXISTS customers 
                          (id SERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, balance NUMERIC DEFAULT 0.0)""")
-
             c.execute("""CREATE TABLE IF NOT EXISTS customer_ledger 
-                         (id SERIAL PRIMARY KEY, customer_id INTEGER, 
+                         (id SERIAL PRIMARY KEY, customer_id INTEGER REFERENCES customers(id) ON DELETE CASCADE, 
                           txn_date TEXT, description TEXT, debit NUMERIC DEFAULT 0.0, credit NUMERIC DEFAULT 0.0, balance NUMERIC DEFAULT 0.0)""")
-
             c.execute("""CREATE TABLE IF NOT EXISTS bills 
                          (id SERIAL PRIMARY KEY, bill_no INTEGER, bill_date_key TEXT, customer_type TEXT, 
                           customer_name TEXT, items TEXT, total NUMERIC, paid NUMERIC DEFAULT 0.0, time_str TEXT)""")
-
-            sample_prods = [
-                (101, 'seeragam', 'சீரகம்', 'Kg', 600.0),
-                (102, 'milagu', 'மிளகு', 'Kg', 900.0),
-                (103, 'kadalai ennai', 'கடலை எண்ணெய்', 'L', 180.0),
-                (104, 'jeeni', 'சீனி', 'Kg', 42.0),
-                (105, 'colgate paste', 'கோல்கேட் பேஸ்ட்', 'Pcs', 45.0),
-                (106, 'ponni arisi', 'பொன்னி அரிசி', 'Kg', 55.0),
-                (107, 'nattu sakkarai', 'நாட்டு சர்க்கரை', 'Kg', 70.0)
-            ]
-            for p in sample_prods:
-                try:
-                    c.execute("""INSERT INTO products (code, name, print_name, unit, price) 
-                                 VALUES (%s, %s, %s, %s, %s) ON CONFLICT (code) DO NOTHING""", p)
-                except Exception:
-                    pass
-            c.close()
+            conn.commit()
+            print("🚀 Supabase PostgreSQL Connected!")
         else:
-            c = conn.cursor()
             c.execute("""CREATE TABLE IF NOT EXISTS products 
                          (code INTEGER PRIMARY KEY, name TEXT, print_name TEXT, unit TEXT, price REAL)""")
             c.execute("""CREATE TABLE IF NOT EXISTS customers 
@@ -127,13 +105,15 @@ def init_db():
                 (104, 'jeeni', 'சீனி', 'Kg', 42.0),
                 (105, 'colgate paste', 'கோல்கேட் பேஸ்ட்', 'Pcs', 45.0),
                 (106, 'ponni arisi', 'பொன்னி அரிசி', 'Kg', 55.0),
-                (107, 'nattu sakkarai', 'நாட்டு சர்க்கரை', 'Kg', 70.0)
+                (107, 'ponni arisi sippam', 'பொன்னி அரிசி (சிப்பம்)', 'Pcs', 1350.0)
             ]
             for p in sample_prods:
                 c.execute("INSERT OR IGNORE INTO products (code, name, print_name, unit, price) VALUES (?, ?, ?, ?, ?)", p)
             conn.commit()
-            c.close()
+            print("💻 Local SQLite Connected!")
+        c.close()
     except Exception as e:
+        if conn: conn.rollback()
         print("DB Init Info:", e)
     finally:
         if conn: conn.close()
@@ -143,28 +123,9 @@ init_db()
 @app.get("/api/data")
 def get_data():
     try:
-        raw_prods = execute_query("SELECT code, name, COALESCE(print_name, name) as print_name, unit, price FROM products WHERE code < 1000 ORDER BY code ASC", fetch_all=True)
-        raw_custs = execute_query("SELECT id, name, balance FROM customers ORDER BY name ASC", fetch_all=True)
-        
-        products = []
-        for p in (raw_prods or []):
-            products.append({
-                "code": int(p["code"]),
-                "name": str(p["name"]),
-                "print_name": str(p["print_name"]),
-                "unit": str(p.get("unit") or "Kg"),
-                "price": float(p["price"] or 0.0)
-            })
-            
-        customers = []
-        for c in (raw_custs or []):
-            customers.append({
-                "id": int(c["id"]),
-                "name": str(c["name"]),
-                "balance": float(c["balance"] or 0.0)
-            })
-            
-        return {"status": "ok", "products": products, "customers": customers}
+        products = execute_query("SELECT code, name, COALESCE(print_name, name) as print_name, unit, price FROM products ORDER BY code ASC", fetch_all=True)
+        customers = execute_query("SELECT id, name, balance FROM customers ORDER BY name ASC", fetch_all=True)
+        return {"status": "ok", "products": products or [], "customers": customers or []}
     except Exception as e:
         return {"status": "error", "msg": str(e), "products": [], "customers": []}
 
@@ -177,13 +138,11 @@ def get_bills_by_date(date_str: str):
         bills = []
         for r in (raw_bills or []):
             d = dict(r)
-            if isinstance(d.get('items'), str):
+            if isinstance(d['items'], str):
                 try:
                     d['items'] = json.loads(d['items'])
                 except Exception:
                     d['items'] = []
-            d['total'] = float(d.get('total') or 0.0)
-            d['paid'] = float(d.get('paid') or 0.0)
             bills.append(d)
         return {"status": "ok", "bills": bills}
     except Exception as e:
@@ -192,30 +151,9 @@ def get_bills_by_date(date_str: str):
 @app.get("/api/customer/ledger/{cid}")
 def get_customer_ledger(cid: int):
     try:
-        # கஸ்டமருக்கு லெட்ஜர் இல்லையென்றால் தொடக்க இருப்பு தானாக உருவாக்கும்
-        check = execute_query("SELECT id FROM customer_ledger WHERE customer_id=? LIMIT 1", (cid,), fetch_one=True)
-        if not check:
-            cust = execute_query("SELECT name, balance FROM customers WHERE id=?", (cid,), fetch_one=True)
-            if cust:
-                now_str = datetime.now(IST).strftime("%d-%m-%Y %I:%M %p")
-                bal = float(cust.get('balance') or 0.0)
-                execute_query("""INSERT INTO customer_ledger (customer_id, txn_date, description, debit, credit, balance)
-                                 VALUES (?, ?, ?, ?, ?, ?)""", 
-                              (cid, now_str, "தொடக்க இருப்பு", bal, 0.0, bal), commit=True)
-
-        raw_ledger = execute_query("""SELECT txn_date, description, debit, credit, balance 
-                                      FROM customer_ledger WHERE customer_id=? ORDER BY id DESC""", (cid,), fetch_all=True)
-        
-        ledger = []
-        for l in (raw_ledger or []):
-            ledger.append({
-                "txn_date": str(l.get("txn_date") or ""),
-                "description": str(l.get("description") or ""),
-                "debit": float(l.get("debit") or 0.0),
-                "credit": float(l.get("credit") or 0.0),
-                "balance": float(l.get("balance") or 0.0)
-            })
-        return {"status": "ok", "ledger": ledger}
+        ledger = execute_query("""SELECT txn_date, description, debit, credit, balance 
+                                  FROM customer_ledger WHERE customer_id=? ORDER BY id DESC""", (cid,), fetch_all=True)
+        return {"status": "ok", "ledger": ledger or []}
     except Exception as e:
         return {"status": "error", "msg": str(e), "ledger": []}
 
@@ -259,37 +197,30 @@ def save_customer(cu: CustomerModel):
     conn = None
     try:
         conn = get_db()
+        c = conn.cursor()
         now_str = datetime.now(IST).strftime("%d-%m-%Y %I:%M %p")
         c_name = cu.name.strip()
         
+        check_q = "SELECT id FROM customers WHERE LOWER(name)=LOWER(%s)" if USE_POSTGRES else "SELECT id FROM customers WHERE LOWER(name)=LOWER(?)"
+        c.execute(check_q, (c_name,))
+        if c.fetchone():
+            return {"status": "exists", "msg": f"'{c_name}' பெயரில் ஏற்கெனவே கணக்கு உள்ளது!"}
+        
         if USE_POSTGRES:
-            conn.autocommit = True
-            c = conn.cursor()
-            c.execute("SELECT id FROM customers WHERE LOWER(name)=LOWER(%s)", (c_name,))
-            if c.fetchone():
-                return {"status": "exists", "msg": f"'{c_name}' பெயரில் ஏற்கெனவே கணக்கு உள்ளது!"}
-            
             c.execute("INSERT INTO customers (name, balance) VALUES (%s, %s) RETURNING id", (c_name, cu.balance))
-            fetch_res = c.fetchone()
-            if fetch_res:
-                new_cid = fetch_res[0]
-                c.execute("""INSERT INTO customer_ledger (customer_id, txn_date, description, debit, credit, balance) 
-                             VALUES (%s, %s, %s, %s, %s, %s)""", (new_cid, now_str, "தொடக்க இருப்பு", cu.balance, 0.0, cu.balance))
-            c.close()
-        else:
-            c = conn.cursor()
-            c.execute("SELECT id FROM customers WHERE LOWER(name)=LOWER(?)", (c_name,))
-            if c.fetchone():
-                return {"status": "exists", "msg": f"'{c_name}' பெயரில் ஏற்கெனவே கணக்கு உள்ளது!"}
+            row = c.fetchone()
+            new_cid = row[0] if row else 0
+            c.execute("""INSERT INTO customer_ledger (customer_id, txn_date, description, debit, credit, balance) 
+                         VALUES (%s, %s, %s, %s, %s, %s)""", (new_cid, now_str, "தொடக்க இருப்பு", cu.balance, 0.0, cu.balance))
             c.execute("INSERT INTO customers (name, balance) VALUES (?, ?)", (c_name, cu.balance))
             new_cid = c.lastrowid
             c.execute("""INSERT INTO customer_ledger (customer_id, txn_date, description, debit, credit, balance) 
                          VALUES (?, ?, ?, ?, ?, ?)""", (new_cid, now_str, "தொடக்க இருப்பு", cu.balance, 0.0, cu.balance))
-            conn.commit()
-            c.close()
         
+        conn.commit()
         return {"status": "ok"}
     except Exception as e:
+        if conn: conn.rollback()
         return {"status": "error", "msg": str(e)}
     finally:
         if conn: conn.close()
@@ -303,12 +234,10 @@ def delete_customer(cid: int):
         param = "%s" if USE_POSTGRES else "?"
         c.execute(f"DELETE FROM customer_ledger WHERE customer_id={param}", (cid,))
         c.execute(f"DELETE FROM customers WHERE id={param}", (cid,))
-        if not USE_POSTGRES:
-            conn.commit()
-        c.close()
+        conn.commit()
         return {"status": "ok"}
     except Exception as e:
-        if conn and not USE_POSTGRES: conn.rollback()
+        if conn: conn.rollback()
         return {"status": "error", "msg": str(e)}
     finally:
         if conn: conn.close()
@@ -335,13 +264,11 @@ def add_payment(p: PaymentModel):
             c.execute(f"""INSERT INTO customer_ledger (customer_id, txn_date, description, debit, credit, balance) 
                          VALUES ({param}, {param}, {param}, {param}, {param}, {param})""", 
                       (p.customer_id, now_str, "ரொக்க வரவு", 0.0, p.amount, new_bal))
-            if not USE_POSTGRES:
-                conn.commit()
-            c.close()
+            conn.commit()
             return {"status": "ok"}
         return {"status": "error", "msg": "வாடிக்கையாளர் கிடைக்கவில்லை"}
     except Exception as e:
-        if conn and not USE_POSTGRES: conn.rollback()
+        if conn: conn.rollback()
         return {"status": "error", "msg": str(e)}
     finally:
         if conn: conn.close()
@@ -353,21 +280,21 @@ class BillRequest(BaseModel):
     total: float
     paid: float
 
+# Concurrency Lock
 @app.post("/api/bill")
 def save_bill(b: BillRequest):
     conn = None
     try:
         conn = get_db()
+        c = conn.cursor()
         now_ist = datetime.now(IST)
         date_key = now_ist.strftime("%Y-%m-%d")
         time_str = now_ist.strftime("%d-%m-%Y %I:%M %p")
         param = "%s" if USE_POSTGRES else "?"
         
         if USE_POSTGRES:
-            conn.autocommit = True
-            c = conn.cursor()
+            c.execute("SELECT pg_advisory_xact_lock(42);")
         else:
-            c = conn.cursor()
             c.execute("BEGIN IMMEDIATE")
             
         c.execute(f"SELECT MAX(bill_no) FROM bills WHERE bill_date_key={param}", (date_key,))
@@ -380,7 +307,7 @@ def save_bill(b: BillRequest):
                      VALUES ({param}, {param}, {param}, {param}, {param}, {param}, {param}, {param})""",
                   (daily_bill_no, date_key, b.customer_type, b.customer_name, items_json, b.total, b.paid, time_str))
         
-        if "Credit" in b.customer_type and b.customer_name:
+        if b.customer_type == "ரெகுலர் கஸ்டமர் (Credit)" and b.customer_name:
             c.execute(f"SELECT id, balance FROM customers WHERE LOWER(name)=LOWER({param})", (b.customer_name.strip(),))
             cust_row = c.fetchone()
             if cust_row:
@@ -394,13 +321,10 @@ def save_bill(b: BillRequest):
                              VALUES ({param}, {param}, {param}, {param}, {param}, {param})""", 
                           (cid, time_str, f"பில் எண் #{daily_bill_no}", b.total, b.paid, new_bal))
                 
-        if not USE_POSTGRES:
-            conn.commit()
-            
-        c.close()
+        conn.commit()
         return {"status": "ok", "bill_no": daily_bill_no, "date_key": date_key, "time": time_str}
     except Exception as e:
-        if conn and not USE_POSTGRES: conn.rollback()
+        if conn: conn.rollback()
         return {"status": "error", "msg": str(e)}
     finally:
         if conn: conn.close()
@@ -418,7 +342,7 @@ def get_ui():
       <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; -webkit-tap-highlight-color: transparent; }
         body { background: #f1f5f9; color: #0f172a; padding: 4px; display: flex; justify-content: center; }
-        .app-container { width: 100%; max-width: 500px; background: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 14px rgba(0,0,0,0.06); min-height: 98vh; display: flex; flex-direction: column; position: relative; }
+        .app-container { width: 100%; max-width: 500px; background: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 14px rgba(0,0,0,0.06); min-height: 98vh; display: flex; flex-direction: column; }
         
         .header { background: #1e3a8a; color: #ffffff; padding: 10px; text-align: center; }
         .header h1 { font-size: 1.15rem; font-weight: 800; letter-spacing: 0.5px; }
@@ -455,10 +379,10 @@ def get_ui():
         .suggest-item { padding: 10px; border-bottom: 1px solid #f1f5f9; font-size: 13px; font-weight: 700; cursor: pointer; display: flex; justify-content: space-between; }
         .suggest-item:hover, .suggest-item:active { background: #eff6ff; color: #2563eb; }
         
-        /* ரூட் லெவல் மாடல்: எந்த ஸ்கிரீனிலும் மறையாது */
-        .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; padding: 10px; z-index: 99999; }
-        .modal-card { background: #ffffff; border-radius: 12px; max-width: 460px; width: 100%; max-height: 92vh; display: flex; flex-direction: column; padding: 14px; overflow: hidden; box-shadow: 0 10px 25px rgba(0,0,0,0.25); }
+        .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; padding: 8px; z-index: 100; }
+        .modal-card { background: #ffffff; border-radius: 10px; max-width: 440px; width: 100%; max-height: 90vh; display: flex; flex-direction: column; padding: 12px; overflow: hidden; }
 
+        /* புளூடூத் தெர்மல் அச்சு வடிவமைப்பு */
         @media print {
           body * { visibility: hidden; }
           #receipt, #receipt * { visibility: visible; }
@@ -504,7 +428,7 @@ def get_ui():
       <div class="app-container">
         <div class="header">
           <h1>🏪 KSA மளிகை, திருமயம்</h1>
-          <p>அதிவேக மளிகைக் கடை பில்லிங் முறை</p>
+          <p>அதிவேக மொபைல் பில்லிங் & கணக்கு முறை</p>
         </div>
 
         <div class="nav-tabs">
@@ -534,7 +458,8 @@ def get_ui():
           <div class="box">
             <div class="input-group">
               <input type="number" id="posCode" placeholder="Code" style="flex: 0.8; text-align: center; font-size: 15px; font-weight: 800;" oninput="onPosCodeInput()">
-              <input type="text" id="posSearch" placeholder="🔍 தேடல் (seeragam, ennai...)" style="flex: 2.2;" oninput="handlePosSmartSearch(this.value)" autocomplete="off">
+              <!-- தங்கிலீஷ் -> தமிழ் தேடல் பார் -->
+              <input type="text" id="posSearch" placeholder="🔍 தேடல் (seeragam, ponni...)" style="flex: 2.2;" oninput="handlePosSmartSearch(this.value)" autocomplete="off">
             </div>
 
             <div id="posSuggestions" class="suggest-box hidden"></div>
@@ -545,7 +470,7 @@ def get_ui():
             </div>
 
             <div class="input-group">
-              <input type="text" id="posQty" placeholder="அளவு (எ.கா: 50, 250, 1)" style="flex: 1.2; text-align: center; font-size: 15px;" oninput="recalcSmartTotal()">
+              <input type="text" id="posQty" placeholder="அளவு (எ.கா: 25, 450, 50g)" style="flex: 1.2; text-align: center; font-size: 15px;" oninput="recalcSmartTotal()">
               <input type="number" id="posRate" placeholder="விலை ₹" style="flex: 1;" oninput="recalcSmartTotal()">
               <input type="number" id="posTotal" placeholder="தொகை ₹" style="flex: 1.1; text-align: right; background: #fef9c3; font-weight: 800; color: #854d0e;" readonly>
             </div>
@@ -585,24 +510,22 @@ def get_ui():
           </div>
         </div>
 
-        <!-- 2. PRODUCTS TAB (கிலோ, லிட்டர், எண்ணிக்கை ஆட்டோ-செலக்ட்) -->
+        <!-- 2. PRODUCTS TAB -->
         <div id="viewProds" class="view-panel hidden">
           <div class="box" style="background: #f0fdf4; border-color: #bbf7d0;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
-              <span id="prodFormTitle" style="font-size: 12px; font-weight: 800; color: #166534;">➕ புதிய மளிகைப் பொருள்</span>
+              <span id="prodFormTitle" style="font-size: 12px; font-weight: 800; color: #166534;">➕ புதிய பொருள் சேர்த்தல்</span>
               <span id="prodEditBadge" class="hidden" style="font-size: 10px; background: #bbf7d0; padding: 2px 5px; border-radius: 4px; font-weight: 800; color: #166534;">Editing</span>
             </div>
             
             <div class="input-group">
               <input type="number" id="npCode" placeholder="Code" style="flex: 0.8; text-align: center; font-weight: 800; background: #e2e8f0;" readonly>
-              <!-- தங்கிலீஷ் பெயர் அடித்தால் உடனடியாக யூனிட் மாறும் -->
-              <input type="text" id="npName" placeholder="Tanglish (seeni, ennai, soap...)" style="flex: 2.2;" oninput="handleProductInput(this.value)">
+              <input type="text" id="npName" placeholder="Tanglish பெயர் (gold winner, seeni...)" style="flex: 2.2;" oninput="onTanglishType(this.value)">
             </div>
             
             <div class="input-group">
-              <!-- தமிழ் பெயர் அடித்தாலும் உடனடியாக யூனிட் மாறும் -->
-              <input type="text" id="npPrintName" placeholder="தமிழ் பெயர் (எண்ணெய், சீனி...)" style="flex: 2; font-weight: 700; color: #166534;" oninput="detectAndSetUnit(this.value)">
-              <select id="npUnit" style="flex: 1.1; font-weight: 800;">
+              <input type="text" id="npPrintName" placeholder="தமிழ் பெயர்" style="flex: 2; font-weight: 700; color: #166534;">
+              <select id="npUnit" style="flex: 1;">
                 <option value="Kg">கிலோ (Kg)</option>
                 <option value="L">லிட்டர் (L)</option>
                 <option value="Pcs">எண்ணிக்கை (Pcs)</option>
@@ -652,70 +575,77 @@ def get_ui():
           </div>
 
           <div style="display: flex; justify-content: space-between; align-items: center;">
-            <h4 style="font-size: 12px; color: #475569;">வாடிக்கையாளர்கள் (தொட்டு பாஸ்புக் பார்க்க):</h4>
+            <h4 style="font-size: 12px; color: #475569;">வாடிக்கையாளர்கள் (தொட்டு பார்க்க):</h4>
             <span style="font-size: 11px; color: #64748b;" id="custCountBadge">மொத்தம்: 0</span>
           </div>
           
           <div id="ledgerList" style="display: flex; flex-direction: column; gap: 5px; max-height: 260px; overflow-y: auto;"></div>
+
+          <!-- Passbook Modal -->
+          <div id="passbookModal" class="modal-overlay hidden">
+            <div class="modal-card">
+              <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px;">
+                <div>
+                  <h3 id="pbCustName" style="font-size: 14px; font-weight: 800; color: #1e3a8a;"></h3>
+                  <p id="pbCustBal" style="font-size: 12px; font-weight: 800; color: #1e40af; margin-top: 1px;"></p>
+                </div>
+                <button onclick="closePassbook()" class="btn btn-red" style="padding: 2px 8px; font-size: 12px; min-height: 30px;">✕ மூடு</button>
+              </div>
+
+              <div style="display: flex; gap: 5px; margin: 8px 0;">
+                <button onclick="window.print()" class="btn btn-blue" style="flex: 1; padding: 6px; font-size: 12px; min-height: 34px;">🖨️ பிரிண்ட்</button>
+                <button onclick="downloadPassbookPdf()" class="btn btn-soft-amber" style="flex: 1; padding: 6px; font-size: 12px; min-height: 34px;">📥 A4 PDF</button>
+              </div>
+
+              <div id="passbookPrintArea" style="overflow-y: auto; flex: 1;">
+                <div id="pbHeaderPrint" style="text-align: center; border-bottom: 1px dashed #000; padding-bottom: 4px; margin-bottom: 6px;">
+                  <h2 style="font-size: 15px; font-weight: 800; color:#000;">KSA மளிகை, திருமயம்</h2>
+                  <div style="font-size: 11px; margin-top: 1px; color:#000;">வாடிக்கையாளர் கணக்கு அறிக்கை</div>
+                  <div style="display: flex; justify-content: space-between; font-size: 11px; margin-top: 3px; font-weight: 700; color:#000;">
+                    <span id="pbPrintCustName"></span>
+                    <span id="pbPrintCustBal"></span>
+                  </div>
+                </div>
+
+                <table>
+                  <thead>
+                    <tr style="border-bottom: 1px solid #000;">
+                      <th style="font-size: 11px; color:#000 !important; background:transparent !important;">தேதி</th>
+                      <th style="font-size: 11px; color:#000 !important; background:transparent !important;">விவரம்</th>
+                      <th class="text-right" style="font-size: 11px; color:#000 !important; background:transparent !important;">Dr</th>
+                      <th class="text-right" style="font-size: 11px; color:#000 !important; background:transparent !important;">Cr</th>
+                      <th class="text-right" style="font-size: 11px; color:#000 !important; background:transparent !important;">இருப்பு</th>
+                    </tr>
+                  </thead>
+                  <tbody id="pbTableBody"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
         </div>
 
-        <!-- 4. HISTORY TAB (மொத்த வியாபாரம் மற்றும் கலெக்ஷன் எண்கள் முற்றிலுமாக நீக்கம்) -->
+        <!-- 4. HISTORY TAB (INSTANT SEARCH & TAP-TO-PREVIEW) -->
         <div id="viewHistory" class="view-panel hidden">
           <div class="box" style="background: #eff6ff; border-color: #bfdbfe; padding: 6px;">
             <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px;">
               <span style="font-size: 12px; font-weight: 800; color: #1e40af;">📅 தேதி:</span>
               <input type="date" id="historyDatePicker" style="flex: 1; padding: 4px 8px; font-size: 13px; height: 36px;" onchange="loadHistoryByDate(this.value)">
-              <button onclick="loadHistoryByDate(document.getElementById('historyDatePicker').value)" class="btn btn-soft-blue" style="padding: 4px 10px; min-height: 36px;" title="புதுப்பி">🔄</button>
+              <button onclick="loadHistoryByDate(document.getElementById('historyDatePicker').value)" class="btn btn-soft-blue" style="padding: 4px 10px; min-height: 36px;" title="புதுப்பி (Refresh)">🔄</button>
             </div>
             <div style="margin-top: 5px;">
               <input type="text" id="historySearchInput" placeholder="🔍 பில் எண் அல்லது பெயர் தேட..." oninput="filterHistoryList(this.value)" style="height: 36px; font-size: 13px;">
             </div>
           </div>
 
-          <!-- பில்களின் பட்டியல் மட்டுமே (மொத்த கலெக்ஷன் எதுவும் இல்லை) -->
-          <div id="billHistoryList" style="display: flex; flex-direction: column; gap: 6px; max-height: 380px; overflow-y: auto;"></div>
+          <div style="display: flex; justify-content: space-between; align-items: center; background: #f1f5f9; padding: 6px 10px; border-radius: 6px;">
+            <span style="font-size: 12px; font-weight: 800; color: #334155;" id="histCountLabel">பில்கள்: 0</span>
+          </div>
+
+          <div id="billHistoryList" style="display: flex; flex-direction: column; gap: 6px; max-height: 340px; overflow-y: auto;"></div>
         </div>
       </div>
 
-      <!-- தனி ரூட் லெவல் பாஸ்புக் மாடல் (எப்போதும் கிளிக் செய்தவுடன் நேரில் விரியும்) -->
-      <div id="passbookModal" class="modal-overlay hidden">
-        <div class="modal-card">
-          <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #e2e8f0; padding-bottom: 8px;">
-            <div>
-              <h3 id="pbCustName" style="font-size: 15px; font-weight: 800; color: #1e3a8a;"></h3>
-              <p id="pbCustBal" style="font-size: 12.5px; font-weight: 800; color: #dc2626; margin-top: 2px;"></p>
-            </div>
-            <button onclick="closePassbook()" class="btn btn-red" style="padding: 4px 12px; font-size: 13px; min-height: 32px; font-weight:800;">✕ மூடு</button>
-          </div>
-
-          <div style="display: flex; gap: 6px; margin: 8px 0;">
-            <button onclick="printPassbookThermal()" class="btn btn-blue" style="flex: 1; padding: 6px; font-size: 12px; min-height: 34px;">🖨️ பிரிண்ட்</button>
-            <button onclick="downloadPassbookPdf()" class="btn btn-soft-amber" style="flex: 1; padding: 6px; font-size: 12px; min-height: 34px;">📥 A4 PDF</button>
-          </div>
-
-          <div id="passbookPrintArea" style="overflow-y: auto; flex: 1; border: 1px solid #cbd5e1; border-radius: 6px; padding: 4px;">
-            <div id="pbHeaderPrint" style="text-align: center; border-bottom: 1px dashed #000; padding-bottom: 4px; margin-bottom: 6px;">
-              <h2 style="font-size: 15px; font-weight: 800; color:#000;">KSA மளிகை, திருமயம்</h2>
-              <div style="font-size: 11px; margin-top: 1px; color:#000;">வாடிக்கையாளர் கணக்கு அறிக்கை (பாஸ்புக்)</div>
-            </div>
-
-            <table>
-              <thead>
-                <tr style="border-bottom: 1.5px solid #000;">
-                  <th style="font-size: 11px; color:#000; background:transparent;">தேதி</th>
-                  <th style="font-size: 11px; color:#000; background:transparent;">விவரம்</th>
-                  <th class="text-right" style="font-size: 11px; color:#000; background:transparent;">பில்</th>
-                  <th class="text-right" style="font-size: 11px; color:#000; background:transparent;">வரவு</th>
-                  <th class="text-right" style="font-size: 11px; color:#000; background:transparent;">பாக்கி</th>
-                </tr>
-              </thead>
-              <tbody id="pbTableBody"></tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-
-      <!-- Bill Preview Modal -->
+      <!-- Bill Items Preview Modal -->
       <div id="billPreviewModal" class="modal-overlay hidden">
         <div class="modal-card">
           <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px;">
@@ -751,10 +681,12 @@ def get_ui():
         </div>
       </div>
 
-      <!-- Thermal Receipt -->
+      <!-- Thermal Receipt (Crystal Clear, Header-Only Bold & No Ugly Overlaps) -->
       <div id="receipt" style="display: none; background: #ffffff; padding: 2px 4px; width: 72mm; color: #000000;">
+        <!-- கடை பெயர் மட்டும் எடுப்பாகவும் பெரியதாகவும் -->
         <div style="text-align: center; font-size: 15px; font-weight: bold; color: #000000; letter-spacing: 0.5px;">KSA மளிகை, திருமயம்</div>
         <div class="border-b"></div>
+        <!-- பில் விவரங்கள் சீரான நேர்த்தியான எழுத்துக்களில் -->
         <div style="display: flex; justify-content: space-between; font-size: 11.5px;"><span>பில் எண்: <span id="rBillNo"></span></span></div>
         <div style="display: flex; justify-content: space-between; font-size: 11px;"><span>தேதி: <span id="rTime"></span></span></div>
         <div style="font-size: 11.5px; margin-top: 1px;">கஸ்டமர்: <span id="rCust"></span></div>
@@ -791,7 +723,6 @@ def get_ui():
         let cashCustTransliterateTimer = null;
         let posSearchTransliterateTimer = null;
         let activePbCustomer = null;
-        let activePbLedger = [];
 
         function getTodayDateStr() {
           let now = new Date();
@@ -845,6 +776,7 @@ def get_ui():
           if (p) selectPosProduct(p);
         }
 
+        /* தங்கிலீஷ் -> தமிழ் தேடல் & உடனடி பரிந்துரை */
         function handlePosSmartSearch(val) {
           let q = val.trim().toLowerCase();
           let suggestBox = document.getElementById('posSuggestions');
@@ -915,20 +847,20 @@ def get_ui():
 
         function parseSmartInput(raw) {
           let str = String(raw).trim().toLowerCase();
-          if (!str) return { qty: 0, isSubUnit: false };
+          if (!str) return { qty: 0, isGram: false };
 
           if (str.includes('g') || str.includes('ml')) {
             let n = parseFloat(str.replace(/[^0-9.]/g, '')) || 0;
-            return { qty: n, isSubUnit: true };
+            return { qty: n, isGram: true };
           }
           let n = parseFloat(str) || 0;
           if (activeBaseUnit === 'Pcs') {
-            return { qty: n, isSubUnit: false };
+            return { qty: n, isGram: false };
           }
           if (n >= 100) {
-            return { qty: n, isSubUnit: true };
+            return { qty: n, isGram: true };
           }
-          return { qty: n, isSubUnit: false };
+          return { qty: n, isGram: false };
         }
 
         function recalcSmartTotal() {
@@ -940,7 +872,7 @@ def get_ui():
           if (activeBaseUnit === 'Pcs') {
             tot = parsed.qty * rate;
           } else {
-            if (parsed.isSubUnit) {
+            if (parsed.isGram) {
               tot = (parsed.qty / 1000) * rate;
             } else {
               tot = parsed.qty * rate;
@@ -960,17 +892,11 @@ def get_ui():
           let displayQty = '';
           if (activeBaseUnit === 'Pcs') {
             displayQty = `${parsed.qty} Pcs`;
-          } else if (activeBaseUnit === 'L') {
-            if (parsed.isSubUnit) {
-              displayQty = `${parsed.qty} ml`;
-            } else {
-              displayQty = `${parsed.qty} L`;
-            }
           } else {
-            if (parsed.isSubUnit) {
-              displayQty = `${parsed.qty} g`;
+            if (parsed.isGram) {
+              displayQty = `${parsed.qty} ${activeBaseUnit === 'Kg' ? 'g' : 'ml'}`;
             } else {
-              displayQty = `${parsed.qty} Kg`;
+              displayQty = `${parsed.qty} ${activeBaseUnit}`;
             }
           }
 
@@ -1009,7 +935,7 @@ def get_ui():
           let regPaidRow = document.getElementById('regularPaidRow');
           let cashNameInput = document.getElementById('cashCustNameInput');
           
-          if (ctype.includes('Credit')) {
+          if (ctype === 'ரெகுலர் கஸ்டமர் (Credit)') {
             regDiv.classList.remove('hidden');
             regPaidRow.classList.remove('hidden');
             regPaidRow.style.display = 'flex';
@@ -1029,7 +955,7 @@ def get_ui():
           let ctype = document.getElementById('custType').value;
           let cname = '';
 
-          if (ctype.includes('Credit')) {
+          if (ctype === 'ரெகுலர் கஸ்டமர் (Credit)') {
             cname = document.getElementById('regularCustSelect').value;
             if (!cname) return alert('வாடிக்கையாளரைத் தேர்வு செய்யவும்!');
           } else {
@@ -1038,7 +964,7 @@ def get_ui():
           }
 
           let total = parseFloat(document.getElementById('billTotal').innerText);
-          let paid = (!ctype.includes('Credit')) ? total : (parseFloat(document.getElementById('billPaidAmt').value) || 0);
+          let paid = (ctype === 'வாடிக்கையாளர் (Cash)') ? total : (parseFloat(document.getElementById('billPaidAmt').value) || 0);
 
           try {
             let res = await fetch('/api/bill', {
@@ -1072,7 +998,7 @@ def get_ui():
           document.getElementById('rTime').innerText = timeStr;
           
           let custDisplay = cname;
-          if (ctype.includes('Credit')) {
+          if (ctype === 'ரெகுலர் கஸ்டமர் (Credit)') {
             custDisplay += ' (Credit Bill)';
           }
           document.getElementById('rCust').innerText = custDisplay;
@@ -1089,7 +1015,7 @@ def get_ui():
           document.getElementById('rTotal').innerText = total;
           
           let paidRow = document.getElementById('rPaidRow');
-          if (ctype.includes('Credit') && paid > 0) {
+          if (ctype === 'ரெகுலர் கஸ்டமர் (Credit)' && paid > 0) {
             paidRow.style.display = 'flex';
             document.getElementById('rPaid').innerText = paid;
           } else {
@@ -1114,57 +1040,34 @@ def get_ui():
           }
         }
 
-        /* ==================== PRODUCTS TAB (கிலோ, லிட்டர், எண்ணிக்கை துல்லியமான ஆட்டோ-செலக்ட்) ==================== */
+        /* ==================== PRODUCTS TAB ==================== */
         function setNextProductCode() {
           let editBadge = document.getElementById('prodEditBadge');
           if (editBadge && !editBadge.classList.contains('hidden')) return;
-          
-          let validCodes = db.products
-            .map(p => parseInt(p.code))
-            .filter(c => !isNaN(c) && c >= 101 && c < 1000);
-            
-          let nextCode = 101;
-          if (validCodes.length > 0) {
-            nextCode = Math.max(...validCodes) + 1;
-          }
-          document.getElementById('npCode').value = nextCode;
+          let maxCode = 100;
+          db.products.forEach(p => {
+            let c = parseInt(p.code);
+            if (!isNaN(c) && c > maxCode) maxCode = c;
+          });
+          document.getElementById('npCode').value = maxCode + 1;
         }
 
-        // தமிழ் & தங்கிலீஷ் இரண்டிற்கும் உடனடி யூனிட் தேர்வு
-        function detectAndSetUnit(text) {
-          if (!text) return;
-          let t = text.trim().toLowerCase();
-          let unitSel = document.getElementById('npUnit');
-          
-          // 1. திரவப் பொருட்கள் -> லிட்டர் (L)
-          let liquidWords = ['oil', 'ennai', 'ghee', 'milk', 'curd', 'juice', 'thaen', 'honey', 
-                             'எண்ணெய்', 'நெய்', 'பால்', 'தயிர்', 'தேன்', 'லிட்டர்', 'லிட்'];
-          
-          // 2. எண்ணிக்கை / பாக்கெட் பொருட்கள் -> எண்ணிக்கை (Pcs)
-          let pieceWords = ['soap', 'paste', 'biscuit', 'box', 'pkt', 'pack', 'brush', 'bottle', 
-                            'pcs', 'piece', 'shampoo', 'theepetti', 'bar', 'cake', 'pen', 'bun',
-                            'சோப்', 'பேஸ்ட்', 'பிரஷ்', 'ஷாம்பு', 'பிஸ்கட்', 'பாக்கெட்', 'பாக்ஸ்', 
-                            'தீப்பெட்டி', 'கற்பூரம்', 'ஊதுபத்தி', 'பாட்டில்', 'பீஸ்', 'எண்ணிக்கை'];
-
-          let isLiquid = liquidWords.some(w => t.includes(w));
-          let isPiece = pieceWords.some(w => t.includes(w));
-
-          if (isLiquid) {
-            unitSel.value = 'L';
-          } else if (isPiece) {
-            unitSel.value = 'Pcs';
-          } else {
-            unitSel.value = 'Kg';
-          }
-        }
-
-        function handleProductInput(val) {
-          detectAndSetUnit(val);
+        function onTanglishType(val) {
           clearTimeout(transliterateTimer);
           let trimmed = val.trim();
           if (!trimmed) {
             document.getElementById('npPrintName').value = '';
             return;
+          }
+          
+          let lCase = trimmed.toLowerCase();
+          let unitSel = document.getElementById('npUnit');
+          if (lCase.includes('oil') || lCase.includes('ennai') || lCase.includes('ghee')) {
+            unitSel.value = 'L';
+          } else if (lCase.includes('soap') || lCase.includes('paste') || lCase.includes('biscuit') || lCase.includes('sippam') || lCase.includes('shampoo')) {
+            unitSel.value = 'Pcs';
+          } else {
+            unitSel.value = 'Kg';
           }
 
           transliterateTimer = setTimeout(async () => {
@@ -1173,14 +1076,12 @@ def get_ui():
               let res = await fetch(url);
               let data = await res.json();
               if (data && data[0] === 'SUCCESS' && data[1][0][1].length > 0) {
-                let tamilName = data[1][0][1][0];
-                document.getElementById('npPrintName').value = tamilName;
-                detectAndSetUnit(tamilName);
+                document.getElementById('npPrintName').value = data[1][0][1][0];
               }
             } catch(err) {
               document.getElementById('npPrintName').value = trimmed;
             }
-          }, 200);
+          }, 250);
         }
 
         function filterProductList(query) {
@@ -1253,7 +1154,7 @@ def get_ui():
           document.getElementById('npName').value = '';
           document.getElementById('npPrintName').value = '';
           document.getElementById('npRate').value = '';
-          document.getElementById('prodFormTitle').innerText = '➕ புதிய மளிகைப் பொருள்';
+          document.getElementById('prodFormTitle').innerText = '➕ புதிய பொருள் சேர்த்தல்';
           document.getElementById('btnSaveProd').innerText = '💾 சேமி';
           document.getElementById('prodEditBadge').classList.add('hidden');
           setNextProductCode();
@@ -1319,7 +1220,7 @@ def get_ui():
           let sel = document.getElementById('regularCustSelect');
           if(sel && sel.selectedIndex >= 0 && sel.value !== '') {
             let bal = parseFloat(sel.options[sel.selectedIndex].dataset.bal || 0);
-            document.getElementById('posCustBalBadge').innerText = '📌 கணக்கு பாக்கி: ₹' + bal.toFixed(2);
+            document.getElementById('posCustBalBadge').innerText = '📌 கணக்கு இருப்பு: ₹' + bal.toFixed(2);
           } else {
             document.getElementById('posCustBalBadge').innerText = '';
           }
@@ -1358,10 +1259,15 @@ def get_ui():
           if (!confirm(`'${name}' வாடிக்கையாளரையும் அவரது கணக்குகளையும் நீக்கவா?`)) return;
           try {
             let res = await fetch(`/api/customer/${cid}`, { method: 'DELETE' });
-            await fetchAll();
-            alert('வாடிக்கையாளர் நீக்கப்பட்டார்!');
+            let out = await res.json();
+            if (out.status === 'ok') {
+              await fetchAll();
+              alert('வாடிக்கையாளர் நீக்கப்பட்டார்!');
+            } else {
+              alert('நீக்குவதில் பிழை: ' + out.msg);
+            }
           } catch(err) {
-            alert('நீக்குவதில் பிழை: ' + err);
+            alert('சர்வர் பிழை: ' + err);
           }
         }
 
@@ -1396,11 +1302,11 @@ def get_ui():
           if (db.customers.length === 0) {
             h = '<p style="text-align:center; font-size:12px; color:#64748b; padding:15px;">வாடிக்கையாளர்கள் இல்லை.</p>';
           } else {
-            db.customers.forEach((c, idx) => {
-              h += `<div style="display:flex; justify-content:space-between; align-items:center; background:#ffffff; padding:10px; border-radius:8px; border:1px solid #cbd5e1; font-size:13px; font-weight:700; margin-bottom:6px; box-shadow:0 1px 3px rgba(0,0,0,0.05);">
-                      <div onclick="openPassbookByIndex(${idx})" style="flex:1; cursor:pointer;">
-                        <span style="font-size:14px; color:#1e3a8a;">🏨 ${c.name}</span>
-                        <div style="color:#dc2626; font-size:12px; margin-top:2px;">பாக்கி இருப்பு: ₹${parseFloat(c.balance).toFixed(2)} 📖 (பாஸ்புக் திறக்க)</div>
+            db.customers.forEach(c => {
+              h += `<div style="display:flex; justify-content:space-between; align-items:center; background:#ffffff; padding:8px 10px; border-radius:6px; border:1px solid #cbd5e1; font-size:13px; font-weight:700; margin-bottom:5px;">
+                      <div onclick="openPassbook(${c.id}, '${c.name}', ${c.balance})" style="flex:1; cursor:pointer;">
+                        <span style="font-size:13.5px; color:#1e3a8a;">🏨 ${c.name}</span>
+                        <div style="color:#1e40af; font-size:11.5px; margin-top:1px;">கணக்கு இருப்பு: ₹${parseFloat(c.balance).toFixed(2)} ➡️</div>
                       </div>
                       <div>
                         <button onclick="deleteCustomer(${c.id}, '${c.name}')" title="நீக்கு" style="border:none; background:#fee2e2; color:#dc2626; font-size:14px; font-weight:900; padding:6px 10px; border-radius:6px; cursor:pointer;">❌</button>
@@ -1411,32 +1317,20 @@ def get_ui():
           document.getElementById('ledgerList').innerHTML = h;
         }
 
-        // 100% நம்பகமான பாஸ்புக் திறப்பு
-        function openPassbookByIndex(idx) {
-          let c = db.customers[idx];
-          if (!c) return;
+        function openPassbook(cid, name, bal) {
+          activePbCustomer = { cid, name, bal };
+          document.getElementById('pbCustName').innerText = '🏨 ' + name;
+          document.getElementById('pbCustBal').innerText = 'தற்போதைய இருப்பு: ₹' + parseFloat(bal).toFixed(2);
+          document.getElementById('pbPrintCustName').innerText = 'வாடிக்கையாளர்: ' + name;
+          document.getElementById('pbPrintCustBal').innerText = 'இருப்பு: ₹' + parseFloat(bal).toFixed(2);
 
-          activePbCustomer = c;
-          document.getElementById('pbCustName').innerText = '🏨 ' + c.name;
-          document.getElementById('pbCustBal').innerText = 'தற்போதைய பாக்கி: ₹' + parseFloat(c.balance).toFixed(2);
-          document.getElementById('pbTableBody').innerHTML = '<tr><td colspan="5" class="text-center" style="padding:15px; font-weight:bold;">ஏற்றுகிறது...</td></tr>';
-          
-          let modal = document.getElementById('passbookModal');
-          modal.classList.remove('hidden');
-
-          fetch(`/api/customer/ledger/${c.id}`).then(r => r.json()).then(out => {
+          fetch(`/api/customer/ledger/${cid}`).then(r => r.json()).then(out => {
             let rows = '';
-            activePbLedger = out.ledger || [];
-            if (activePbLedger.length === 0) {
-              rows = `<tr>
-                <td style="color:#000; font-size:11px;">-</td>
-                <td style="color:#000; font-size:11px;"><b>தொடக்க இருப்பு</b></td>
-                <td class="text-right" style="color:#000;">-</td>
-                <td class="text-right" style="color:#000;">-</td>
-                <td class="text-right" style="color:#000; font-weight:bold;">₹${parseFloat(c.balance).toFixed(2)}</td>
-              </tr>`;
+            let ledgerData = out.ledger || [];
+            if (ledgerData.length === 0) {
+              rows = '<tr><td colspan="5" class="text-center" style="padding:12px; color:#000;">பரிவர்த்தனை ஏதும் இல்லை</td></tr>';
             } else {
-              activePbLedger.forEach(l => {
+              ledgerData.forEach(l => {
                 rows += `<tr>
                   <td style="color:#000; font-size:10px;">${l.txn_date}</td>
                   <td style="color:#000; font-size:11px;"><b>${l.description}</b></td>
@@ -1447,35 +1341,12 @@ def get_ui():
               });
             }
             document.getElementById('pbTableBody').innerHTML = rows;
-          }).catch(err => {
-            document.getElementById('pbTableBody').innerHTML = '<tr><td colspan="5" class="text-center" style="color:#dc2626;">பாஸ்புக் எடுப்பதில் பிழை.</td></tr>';
+            document.getElementById('passbookModal').classList.remove('hidden');
           });
         }
 
         function closePassbook() {
           document.getElementById('passbookModal').classList.add('hidden');
-        }
-
-        function printPassbookThermal() {
-          if (!activePbCustomer) return;
-          document.getElementById('rBillNo').innerText = 'PASSBOOK';
-          document.getElementById('rTime').innerText = getTodayDateStr();
-          document.getElementById('rCust').innerText = activePbCustomer.name;
-          
-          let rRows = '';
-          activePbLedger.slice(0, 10).forEach(l => {
-            let desc = l.description.length > 14 ? l.description.substring(0,14)+'..' : l.description;
-            let amt = l.debit > 0 ? `+₹${parseFloat(l.debit).toFixed(0)}` : `-₹${parseFloat(l.credit).toFixed(0)}`;
-            rRows += `<tr>
-              <td class="col-item">${desc}</td>
-              <td class="col-qty">${l.txn_date.split(' ')[0]}</td>
-              <td class="col-amt">${amt}</td>
-            </tr>`;
-          });
-          document.getElementById('rItems').innerHTML = rRows;
-          document.getElementById('rTotal').innerText = parseFloat(activePbCustomer.balance).toFixed(2);
-          document.getElementById('rPaidRow').style.display = 'none';
-          window.print();
         }
 
         function downloadPassbookPdf() {
@@ -1490,7 +1361,7 @@ def get_ui():
           html2pdf().set(opt).from(element).save();
         }
 
-        /* ==================== ZERO-LAG HISTORY & PREVIEW ==================== */
+        /* ==================== ZERO-LAG HISTORY & TAP-TO-PREVIEW ==================== */
         async function loadHistoryByDate(dateStr) {
           if (!dateStr) return;
           let listDiv = document.getElementById('billHistoryList');
@@ -1500,7 +1371,10 @@ def get_ui():
             let res = await fetch(`/api/bills/by-date/${dateStr}`);
             let data = await res.json();
             currentDayBills = data.bills || [];
+            
+            document.getElementById('histCountLabel').innerText = 'பில்கள்: ' + currentDayBills.length;
             document.getElementById('historySearchInput').value = '';
+
             renderBillsList(currentDayBills);
           } catch(err) {
             listDiv.innerHTML = '<p style="text-align:center; color:#dc2626;">டேட்டா பெறுவதில் சிக்கல்.</p>';
@@ -1531,13 +1405,13 @@ def get_ui():
           let h = '';
           bills.forEach((b, idx) => {
             let badge = b.customer_type.includes('Credit') ? '<span style="font-size:10px; background:#eff6ff; color:#1e40af; padding:1px 5px; border-radius:4px; border:1px solid #bfdbfe; margin-left:4px;">Credit</span>' : '';
-            h += `<div style="background:#ffffff; padding:10px; border-radius:8px; border:1px solid #cbd5e1; font-size:12px; margin-bottom:6px; box-shadow:0 1px 3px rgba(0,0,0,0.03);">
-                    <div onclick="openBillPreview(${idx})" style="display:flex; justify-content:space-between; font-weight:800; font-size:13.5px; cursor:pointer;">
+            h += `<div style="background:#ffffff; padding:8px 10px; border-radius:6px; border:1px solid #cbd5e1; font-size:12px; margin-bottom:5px; box-shadow:0 1px 2px rgba(0,0,0,0.03);">
+                    <div onclick="openBillPreview(${idx})" style="display:flex; justify-content:space-between; font-weight:800; font-size:13px; cursor:pointer;">
                       <span>#${b.bill_no} - 🏨 ${b.customer_name} ${badge}</span>
                       <span style="color:#2563eb;">₹${parseFloat(b.total).toFixed(2)} 🔍</span>
                     </div>
-                    <div onclick="openBillPreview(${idx})" style="font-size:11px; color:#64748b; margin-top:3px; cursor:pointer;">${b.time_str}</div>
-                    <div style="display:flex; gap:6px; margin-top:8px;">
+                    <div onclick="openBillPreview(${idx})" style="font-size:10.5px; color:#64748b; margin-top:2px; cursor:pointer;">${b.time_str}</div>
+                    <div style="display:flex; gap:5px; margin-top:6px;">
                       <button onclick='generateOutput(${b.bill_no}, "${b.time_str}", "${b.customer_type}", "${b.customer_name}", ${JSON.stringify(b.items)}, ${b.total}, ${b.paid || 0}, false)' class="btn btn-blue" style="flex:1.2; padding:4px; font-size:11px; min-height:32px;">🖨️ Re-Print</button>
                       <button onclick='generateOutput(${b.bill_no}, "${b.time_str}", "${b.customer_type}", "${b.customer_name}", ${JSON.stringify(b.items)}, ${b.total}, ${b.paid || 0}, true)' class="btn btn-soft-amber" style="flex:0.8; padding:4px; font-size:11px; min-height:32px;">📥 PDF</button>
                     </div>
