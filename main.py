@@ -75,7 +75,11 @@ def init_db():
         c = conn.cursor()
         if USE_POSTGRES:
             c.execute("""CREATE TABLE IF NOT EXISTS products 
-                         (code INTEGER PRIMARY KEY, name TEXT, print_name TEXT, unit TEXT, price NUMERIC)""")
+                         (code INTEGER PRIMARY KEY, name TEXT, print_name TEXT, unit TEXT, price NUMERIC, category TEXT DEFAULT 'பொதுவானவை')""")
+            try:
+                c.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS category TEXT DEFAULT 'பொதுவானவை'")
+            except Exception:
+                pass
             c.execute("""CREATE TABLE IF NOT EXISTS customers 
                          (id SERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, balance NUMERIC DEFAULT 0.0)""")
             c.execute("""CREATE TABLE IF NOT EXISTS customer_ledger 
@@ -84,11 +88,13 @@ def init_db():
             c.execute("""CREATE TABLE IF NOT EXISTS bills 
                          (id SERIAL PRIMARY KEY, bill_no INTEGER, bill_date_key TEXT, customer_type TEXT, 
                           customer_name TEXT, items TEXT, total NUMERIC, paid NUMERIC DEFAULT 0.0, time_str TEXT)""")
-            conn.commit()
-            print("🚀 Supabase PostgreSQL Connected!")
         else:
             c.execute("""CREATE TABLE IF NOT EXISTS products 
-                         (code INTEGER PRIMARY KEY, name TEXT, print_name TEXT, unit TEXT, price REAL)""")
+                         (code INTEGER PRIMARY KEY, name TEXT, print_name TEXT, unit TEXT, price REAL, category TEXT DEFAULT 'பொதுவானவை')""")
+            try:
+                c.execute("ALTER TABLE products ADD COLUMN category TEXT DEFAULT 'பொதுவானவை'")
+            except Exception:
+                pass
             c.execute("""CREATE TABLE IF NOT EXISTS customers 
                          (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, balance REAL DEFAULT 0.0)""")
             c.execute("""CREATE TABLE IF NOT EXISTS customer_ledger 
@@ -99,18 +105,39 @@ def init_db():
                           customer_name TEXT, items TEXT, total REAL, paid REAL DEFAULT 0.0, time_str TEXT)""")
             
             sample_prods = [
-                (101, 'seeragam', 'சீரகம்', 'Kg', 600.0),
-                (102, 'milagu', 'மிளகு', 'Kg', 900.0),
-                (103, 'kadalai ennai', 'கடலை எண்ணெய்', 'L', 180.0),
-                (104, 'jeeni', 'சீனி', 'Kg', 42.0),
-                (105, 'colgate paste', 'கோல்கேட் பேஸ்ட்', 'Pcs', 45.0),
-                (106, 'ponni arisi', 'பொன்னி அரிசி', 'Kg', 55.0),
-                (107, 'ponni arisi sippam', 'பொன்னி அரிசி (சிப்பம்)', 'Pcs', 1350.0)
+                (101, 'seeragam', 'சீரகம்', 'Kg', 600.0, 'மசாலா & வாசனைப் பொருட்கள்'),
+                (102, 'milagu', 'மிளகு', 'Kg', 900.0, 'மசாலா & வாசனைப் பொருட்கள்'),
+                (103, 'kadalai ennai', 'கடலை எண்ணெய்', 'L', 180.0, 'எண்ணெய் & நெய்'),
+                (104, 'jeeni', 'சீனி', 'Kg', 42.0, 'பேக்கிங் & இனிப்பு வகைகள்'),
+                (105, 'colgate paste', 'கோல்கேட் பேஸ்ட்', 'Pcs', 45.0, 'சோப்பு, பேஸ்ட் & பூஜா'),
+                (106, 'ponni arisi', 'பொன்னி அரிசி', 'Kg', 55.0, 'அரிசி & தானியங்கள்'),
+                (107, 'ponni arisi sippam', 'பொன்னி அரிசி (சிப்பம்)', 'Pcs', 1350.0, 'அரிசி & தானியங்கள்')
             ]
             for p in sample_prods:
-                c.execute("INSERT OR IGNORE INTO products (code, name, print_name, unit, price) VALUES (?, ?, ?, ?, ?)", p)
-            conn.commit()
-            print("💻 Local SQLite Connected!")
+                c.execute("INSERT OR IGNORE INTO products (code, name, print_name, unit, price, category) VALUES (?, ?, ?, ?, ?, ?)", p)
+
+        # பழைய 110 பொருட்களுக்கான ஆட்டோ-அப்டேட்
+        smart_categorizer = [
+            ('எண்ணெய் & நெய்', ['%gold winner%', '%mr gold%', '%fortune%', '%sunland%', '%idayam%', '%udhai%', '%udhaya%', '%ghee%', '%oil%', '%ennai%', '%enna%', '%nallenna%', '%kadalenna%', '%thengaenna%', '%vilakkenna%', '%dalda%', '%vanaspathi%', '%நெய்%', '%எண்ணெய்%']),
+            ('சோப்பு, பேஸ்ட் & பூஜா', ['%hamam%', '%cinthol%', '%lifebuoy%', '%lux%', '%santhoor%', '%pears%', '%medimix%', '%dettol%', '%soap%', '%colgate%', '%close up%', '%pepsodent%', '%sensodyne%', '%paste%', '%brush%', '%surf%', '%aerial%', '%tide%', '%rin%', '%wheel%', '%vim%', '%exo%', '%shampoo%', '%clinic plus%', '%vatika%', '%meera%', '%dhoop%', '%agarbathi%', '%oothabathi%', '%theepetti%', '%karpooram%', '%சோப்பு%', '%பேஸ்ட்%', '%ஊதுபத்தி%', '%கற்பூரம்%']),
+            ('சிற்றுண்டி & பிஸ்கட்', ['%marie%', '%parle%', '%good day%', '%bourbon%', '%oreo%', '%monaco%', '%50-50%', '%milk bikis%', '%tiger%', '%biscuit%', '%biskut%', '%rusk%', '%cake%', '%munch%', '%kitkat%', '%dairy milk%', '%lays%', '%kurkure%', '%bingo%', '%chips%', '%mixture%', '%sev%', '%appalam%', '%vadagam%', '%maggi%', '%yippee%', '%noodles%', '%ரஸ்க்%', '%அப்பளம்%']),
+            ('டீ, காபி & பானங்கள்', ['%3 roses%', '%taj mahal%', '%avt%', '%chakra gold%', '%kannan devan%', '%red label%', '%tea%', '%bru%', '%sunrise%', '%nescafe%', '%coffee%', '%boost%', '%horlicks%', '%complan%', '%bournvita%', '%bovonto%', '%7up%', '%mirinda%', '%coke%', '%pepsi%', '%டீ%', '%காபி%']),
+            ('அரிசி & தானியங்கள்', ['%ponni%', '%baba%', '%nandhi%', '%delight%', '%bullet%', '%biryani%', '%basmati%', '%aashirvaad%', '%arisi%', '%rice%', '%wheat%', '%godhumai%', '%atta%', '%maida%', '%ravai%', '%sooji%', '%semiya%', '%kambu%', '%solam%', '%ragi%', '%கோதுமை%', '%ரவை%', '%மைதா%', '%அரிசி%']),
+            ('பருப்பு வகைகள்', ['%thoor%', '%thuvaram%', '%channa%', '%kadalai%', '%moong%', '%paasi%', '%urad%', '%ulundu%', '%paruppu%', '%parupu%', '%dal%', '%dhal%', '%payaru%', '%pottukadalai%', '%sundal%', '%pattani%', '%rajma%', '%kollu%', '%பருப்பு%', '%உளுந்து%', '%கொண்டைக்கடலை%', '%பட்டாணி%']),
+            ('பேக்கிங் & இனிப்பு வகைகள்', ['%seeni%', '%sakkarai%', '%sugar%', '%nattu sakkarai%', '%vellam%', '%karupatti%', '%kalkandu%', '%uppu%', '%salt%', '%tata salt%', '%puli%', '%poondu%', '%சீனி%', '%சர்க்கரை%', '%வெல்லம்%', '%உப்பு%', '%புளி%']),
+            ('மசாலா & வாசனைப் பொருட்கள்', ['%seeragam%', '%jeeragam%', '%milagu%', '%kadugu%', '%sombu%', '%venthaiyam%', '%pattai%', '%krambu%', '%elakkai%', '%kasakasa%', '%sakthi%', '%aachi%', '%everest%', '%mdh%', '%masala%', '%sambhar%', '%rasam%', '%malli%', '%dhaniya%', '%manjal%', '%மஞ்சள்%', '%மிளகு%', '%சீரகம்%', '%கடுகு%', '%மசாலா%'])
+        ]
+
+        for cat_name, kw_list in smart_categorizer:
+            for kw in kw_list:
+                update_sql = f"UPDATE products SET category = %s WHERE (category = 'பொதுவானவை' OR category IS NULL) AND (LOWER(name) LIKE %s OR LOWER(print_name) LIKE %s)" if USE_POSTGRES else f"UPDATE products SET category = ? WHERE (category = 'பொதுவானவை' OR category IS NULL) AND (LOWER(name) LIKE ? OR LOWER(print_name) LIKE ?)"
+                c.execute(update_sql, (cat_name, kw, kw))
+
+        conn.commit()
+        if USE_POSTGRES:
+            print("🚀 Supabase PostgreSQL Connected & Categorized!")
+        else:
+            print("💻 Local SQLite Connected & Categorized!")
         c.close()
     except Exception as e:
         if conn: conn.rollback()
@@ -123,7 +150,7 @@ init_db()
 @app.get("/api/data")
 def get_data():
     try:
-        products = execute_query("SELECT code, name, COALESCE(print_name, name) as print_name, unit, price FROM products ORDER BY code ASC", fetch_all=True)
+        products = execute_query("SELECT code, name, COALESCE(print_name, name) as print_name, unit, price, COALESCE(category, 'பொதுவானவை') as category FROM products ORDER BY code ASC", fetch_all=True)
         customers = execute_query("SELECT id, name, balance FROM customers ORDER BY name ASC", fetch_all=True)
         return {"status": "ok", "products": products or [], "customers": customers or []}
     except Exception as e:
@@ -163,18 +190,20 @@ class ProductItem(BaseModel):
     print_name: str
     unit: str
     price: float
+    category: str = "பொதுவானவை"
 
 @app.post("/api/product")
 def update_product(p: ProductItem):
     try:
+        cat = p.category.strip() if p.category else "பொதுவானவை"
         if USE_POSTGRES:
-            execute_query("""INSERT INTO products (code, name, print_name, unit, price) VALUES (?, ?, ?, ?, ?)
-                             ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name, print_name=EXCLUDED.print_name, unit=EXCLUDED.unit, price=EXCLUDED.price""",
-                          (p.code, p.name.strip(), p.print_name.strip(), p.unit, p.price), commit=True)
+            execute_query("""INSERT INTO products (code, name, print_name, unit, price, category) VALUES (?, ?, ?, ?, ?, ?)
+                             ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name, print_name=EXCLUDED.print_name, unit=EXCLUDED.unit, price=EXCLUDED.price, category=EXCLUDED.category""",
+                          (p.code, p.name.strip(), p.print_name.strip(), p.unit, p.price, cat), commit=True)
         else:
-            execute_query("""INSERT INTO products (code, name, print_name, unit, price) VALUES (?, ?, ?, ?, ?)
-                             ON CONFLICT(code) DO UPDATE SET name=excluded.name, print_name=excluded.print_name, unit=excluded.unit, price=excluded.price""",
-                          (p.code, p.name.strip(), p.print_name.strip(), p.unit, p.price), commit=True)
+            execute_query("""INSERT INTO products (code, name, print_name, unit, price, category) VALUES (?, ?, ?, ?, ?, ?)
+                             ON CONFLICT(code) DO UPDATE SET name=excluded.name, print_name=excluded.print_name, unit=excluded.unit, price=excluded.price, category=excluded.category""",
+                          (p.code, p.name.strip(), p.print_name.strip(), p.unit, p.price, cat), commit=True)
         return {"status": "ok"}
     except Exception as e:
         return {"status": "error", "msg": str(e)}
@@ -212,6 +241,7 @@ def save_customer(cu: CustomerModel):
             new_cid = row[0] if row else 0
             c.execute("""INSERT INTO customer_ledger (customer_id, txn_date, description, debit, credit, balance) 
                          VALUES (%s, %s, %s, %s, %s, %s)""", (new_cid, now_str, "தொடக்க இருப்பு", cu.balance, 0.0, cu.balance))
+        else:
             c.execute("INSERT INTO customers (name, balance) VALUES (?, ?)", (c_name, cu.balance))
             new_cid = c.lastrowid
             c.execute("""INSERT INTO customer_ledger (customer_id, txn_date, description, debit, credit, balance) 
@@ -280,7 +310,6 @@ class BillRequest(BaseModel):
     total: float
     paid: float
 
-# Concurrency Lock
 @app.post("/api/bill")
 def save_bill(b: BillRequest):
     conn = None
@@ -382,7 +411,6 @@ def get_ui():
         .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; padding: 8px; z-index: 100; }
         .modal-card { background: #ffffff; border-radius: 10px; max-width: 440px; width: 100%; max-height: 90vh; display: flex; flex-direction: column; padding: 12px; overflow: hidden; }
 
-        /* புளூடூத் தெர்மல் அச்சு வடிவமைப்பு */
         @media print {
           body * { visibility: hidden; }
           #receipt, #receipt * { visibility: visible; }
@@ -458,7 +486,6 @@ def get_ui():
           <div class="box">
             <div class="input-group">
               <input type="number" id="posCode" placeholder="Code" style="flex: 0.8; text-align: center; font-size: 15px; font-weight: 800;" oninput="onPosCodeInput()">
-              <!-- தங்கிலீஷ் -> தமிழ் தேடல் பார் -->
               <input type="text" id="posSearch" placeholder="🔍 தேடல் (seeragam, ponni...)" style="flex: 2.2;" oninput="handlePosSmartSearch(this.value)" autocomplete="off">
             </div>
 
@@ -510,7 +537,7 @@ def get_ui():
           </div>
         </div>
 
-        <!-- 2. PRODUCTS TAB -->
+        <!-- 2. PRODUCTS TAB (ACCURATE DICTIONARY CATEGORIZATION + INFINITE SCROLL) -->
         <div id="viewProds" class="view-panel hidden">
           <div class="box" style="background: #f0fdf4; border-color: #bbf7d0;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
@@ -520,7 +547,7 @@ def get_ui():
             
             <div class="input-group">
               <input type="number" id="npCode" placeholder="Code" style="flex: 0.8; text-align: center; font-weight: 800; background: #e2e8f0;" readonly>
-              <input type="text" id="npName" placeholder="Tanglish பெயர் (gold winner, seeni...)" style="flex: 2.2;" oninput="onTanglishType(this.value)">
+              <input type="text" id="npName" placeholder="Tanglish பெயர் (gold winner, marie, thoor...)" style="flex: 2.2;" oninput="onTanglishType(this.value)">
             </div>
             
             <div class="input-group">
@@ -533,6 +560,17 @@ def get_ui():
             </div>
             
             <div class="input-group">
+              <select id="npCategory" style="flex: 1.6; font-size: 13px;">
+                <option value="அரிசி & தானியங்கள்">🌾 அரிசி & தானியங்கள்</option>
+                <option value="பருப்பு வகைகள்">🫘 பருப்பு வகைகள்</option>
+                <option value="எண்ணெய் & நெய்">🛢️ எண்ணெய் & நெய்</option>
+                <option value="மசாலா & வாசனைப் பொருட்கள்">🌶️ மசாலா & வாசனைப் பொருட்கள்</option>
+                <option value="பேக்கிங் & இனிப்பு வகைகள்">🍬 பேக்கிங் & இனிப்பு வகைகள்</option>
+                <option value="சிற்றுண்டி & பிஸ்கட்">🍪 சிற்றுண்டி & பிஸ்கட்</option>
+                <option value="டீ, காபி & பானங்கள்">☕ டீ, காபி & பானங்கள்</option>
+                <option value="சோப்பு, பேஸ்ட் & பூஜா">🧼 சோப்பு, பேஸ்ட் & பூஜா</option>
+                <option value="பொதுவானவை">📦 பொதுவானவை</option>
+              </select>
               <input type="number" id="npRate" placeholder="விலை ₹" style="flex: 1; font-weight: 700;">
             </div>
             
@@ -543,10 +581,24 @@ def get_ui():
           </div>
 
           <div class="box" style="padding: 6px;">
-            <input type="text" id="prodSearchInput" placeholder="🔍 பட்டியலில் தேட..." oninput="filterProductList(this.value)">
+            <div class="input-group" style="margin-bottom: 5px;">
+              <select id="catFilterSelect" onchange="resetAndFilterProducts()" style="font-size: 13px; font-weight: 700; background: #f8fafc; border-color: #3b82f6; color: #1e40af;">
+                <option value="ALL">📁 அனைத்துப் பிரிவுகளும் (All)</option>
+                <option value="அரிசி & தானியங்கள்">🌾 அரிசி & தானியங்கள்</option>
+                <option value="பருப்பு வகைகள்">🫘 பருப்பு வகைகள்</option>
+                <option value="எண்ணெய் & நெய்">🛢️ எண்ணெய் & நெய்</option>
+                <option value="மசாலா & வாசனைப் பொருட்கள்">🌶️ மசாலா & வாசனைப் பொருட்கள்</option>
+                <option value="பேக்கிங் & இனிப்பு வகைகள்">🍬 பேக்கிங் & இனிப்பு வகைகள்</option>
+                <option value="சிற்றுண்டி & பிஸ்கட்">🍪 சிற்றுண்டி & பிஸ்கட்</option>
+                <option value="டீ, காபி & பானங்கள்">☕ டீ, காபி & பானங்கள்</option>
+                <option value="சோப்பு, பேஸ்ட் & பூஜா">🧼 சோப்பு, பேஸ்ட் & பூஜா</option>
+                <option value="பொதுவானவை">📦 பொதுவானவை</option>
+              </select>
+            </div>
+            <input type="text" id="prodSearchInput" placeholder="🔍 பெயர் அல்லது கோட் தேட..." oninput="resetAndFilterProducts()">
           </div>
 
-          <div id="prodList" style="display: flex; flex-direction: column; gap: 5px; max-height: 280px; overflow-y: auto;"></div>
+          <div id="prodList" onscroll="onProdListScroll(this)" style="display: flex; flex-direction: column; gap: 5px; max-height: 290px; overflow-y: auto; padding-bottom: 10px;"></div>
         </div>
 
         <!-- 3. CUSTOMER LEDGER TAB -->
@@ -624,7 +676,7 @@ def get_ui():
           </div>
         </div>
 
-        <!-- 4. HISTORY TAB (INSTANT SEARCH & TAP-TO-PREVIEW) -->
+        <!-- 4. HISTORY TAB -->
         <div id="viewHistory" class="view-panel hidden">
           <div class="box" style="background: #eff6ff; border-color: #bfdbfe; padding: 6px;">
             <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px;">
@@ -681,12 +733,10 @@ def get_ui():
         </div>
       </div>
 
-      <!-- Thermal Receipt (Crystal Clear, Header-Only Bold & No Ugly Overlaps) -->
+      <!-- Thermal Receipt -->
       <div id="receipt" style="display: none; background: #ffffff; padding: 2px 4px; width: 72mm; color: #000000;">
-        <!-- கடை பெயர் மட்டும் எடுப்பாகவும் பெரியதாகவும் -->
         <div style="text-align: center; font-size: 15px; font-weight: bold; color: #000000; letter-spacing: 0.5px;">KSA மளிகை, திருமயம்</div>
         <div class="border-b"></div>
-        <!-- பில் விவரங்கள் சீரான நேர்த்தியான எழுத்துக்களில் -->
         <div style="display: flex; justify-content: space-between; font-size: 11.5px;"><span>பில் எண்: <span id="rBillNo"></span></span></div>
         <div style="display: flex; justify-content: space-between; font-size: 11px;"><span>தேதி: <span id="rTime"></span></span></div>
         <div style="font-size: 11.5px; margin-top: 1px;">கஸ்டமர்: <span id="rCust"></span></div>
@@ -724,6 +774,10 @@ def get_ui():
         let posSearchTransliterateTimer = null;
         let activePbCustomer = null;
 
+        // Infinite Scroll State
+        let filteredProductsList = [];
+        let prodDisplayLimit = 20;
+
         function getTodayDateStr() {
           let now = new Date();
           let y = now.getFullYear();
@@ -741,7 +795,7 @@ def get_ui():
               db.customers = data.customers || [];
               document.getElementById('custCountBadge').innerText = 'மொத்தம்: ' + db.customers.length;
               setNextProductCode();
-              renderProductList(db.products.slice(-6).reverse());
+              resetAndFilterProducts();
               renderCustomerDropdowns();
               renderLedgerList();
             }
@@ -776,7 +830,6 @@ def get_ui():
           if (p) selectPosProduct(p);
         }
 
-        /* தங்கிலீஷ் -> தமிழ் தேடல் & உடனடி பரிந்துரை */
         function handlePosSmartSearch(val) {
           let q = val.trim().toLowerCase();
           let suggestBox = document.getElementById('posSuggestions');
@@ -1040,7 +1093,7 @@ def get_ui():
           }
         }
 
-        /* ==================== PRODUCTS TAB ==================== */
+        /* ==================== PRODUCTS TAB (COMPREHENSIVE DICTIONARY MAPPING) ==================== */
         function setNextProductCode() {
           let editBadge = document.getElementById('prodEditBadge');
           if (editBadge && !editBadge.classList.contains('hidden')) return;
@@ -1060,23 +1113,74 @@ def get_ui():
             return;
           }
           
-          let lCase = trimmed.toLowerCase();
+          let l = trimmed.toLowerCase();
           let unitSel = document.getElementById('npUnit');
-          if (lCase.includes('oil') || lCase.includes('ennai') || lCase.includes('ghee')) {
+          let catSel = document.getElementById('npCategory');
+
+          // முழுமையான மளிகை அகராதிப் பிரிவு சோதனை
+          const oilWords = ['gold winner', 'mr gold', 'fortune', 'sunland', 'idayam', 'anandham', 'udhai', 'udhaya', 'ghee', 'ney', 'nei', 'oil', 'ennai', 'enna', 'nallenna', 'kadalenna', 'thengaenna', 'vilakkenna', 'dalda', 'vanaspathi'];
+          const soapWords = ['hamam', 'cinthol', 'lifebuoy', 'lux', 'santhoor', 'mysore sandal', 'pears', 'medimix', 'dettol', 'soap', 'colgate', 'close up', 'pepsodent', 'sensodyne', 'paste', 'brush', 'surf', 'aerial', 'tide', 'rin', 'wheel', 'vim', 'exo', 'pril', 'comfort', 'lizol', 'harpic', 'shampoo', 'clinic plus', 'vatika', 'meera', 'chik', 'dhoop', 'agarbathi', 'oothabathi', 'karpooram', 'theepetti', 'thiri'];
+          const snackWords = ['marie', 'parle', 'good day', 'bourbon', 'oreo', 'monaco', '50-50', 'milk bikis', 'dark fantasy', 'tiger', 'biscuit', 'biskut', 'rusk', 'cake', 'munch', 'kitkat', 'dairy milk', '5 star', 'chocolate', 'lays', 'kurkure', 'bingo', 'chips', 'mixture', 'sev', 'karasev', 'appalam', 'vadagam', 'maggi', 'yippee', 'noodles'];
+          const bevWords = ['3 roses', 'three roses', 'taj mahal', 'avt', 'chakra gold', 'kannan devan', 'red label', 'tea', 'bru', 'sunrise', 'nescafe', 'coffee', 'boost', 'horlicks', 'complan', 'bournvita', 'milo', 'tang', 'rasna', 'bovonto', '7up', 'mirinda', 'coke', 'pepsi', 'maaza'];
+          const grainWords = ['ponni', 'baba', 'nandhi', 'delight', 'bullet', 'idly rice', 'pacharisi', 'puzhungal', 'kurunai', 'arisi', 'rice', 'wheat', 'godhumai', 'atta', 'aashirvaad', 'maida', 'ravai', 'sooji', 'semiya', 'vermicelli', 'kambu', 'solam', 'kelvaragu', 'ragi', 'thinai', 'samai'];
+          const dalWords = ['thoor', 'thuvaram', 'channa', 'kadalai', 'moong', 'paasi', 'urad', 'ulundu', 'paruppu', 'parupu', 'dal', 'dhal', 'payaru', 'pottukadalai', 'sundal', 'pattani', 'rajma', 'kollu', 'thattai payaru', 'mocha payaru'];
+          const sweetWords = ['seeni', 'sakkarai', 'sugar', 'nattu sakkarai', 'vellam', 'mandai vellam', 'karupatti', 'kalkandu', 'uppu', 'salt', 'tata salt', 'kalluppu', 'thooluppu', 'puli', 'valam puli', 'poondu'];
+          const spiceWords = ['seeragam', 'jeeragam', 'milagu', 'kadugu', 'sombu', 'venthaiyam', 'pattai', 'krambu', 'elakkai', 'kasakasa', 'biryani ilai', 'sakthi', 'aachi', 'everest', 'mdh', 'masala', 'sambhar thool', 'rasam thool', 'malli thool', 'dhaniya', 'varamillagai', 'vathal', 'manjal thool', 'perungayam'];
+
+          // 1. கேட்டகரி தேர்வு
+          if (oilWords.some(w => l.includes(w))) {
+            catSel.value = 'எண்ணெய் & நெய்';
             unitSel.value = 'L';
-          } else if (lCase.includes('soap') || lCase.includes('paste') || lCase.includes('biscuit') || lCase.includes('sippam') || lCase.includes('shampoo')) {
+          } else if (soapWords.some(w => l.includes(w))) {
+            catSel.value = 'சோப்பு, பேஸ்ட் & பூஜா';
             unitSel.value = 'Pcs';
-          } else {
+          } else if (snackWords.some(w => l.includes(w))) {
+            catSel.value = 'சிற்றுண்டி & பிஸ்கட்';
+            unitSel.value = 'Pcs';
+          } else if (bevWords.some(w => l.includes(w))) {
+            catSel.value = 'டீ, காபி & பானங்கள்';
+            unitSel.value = 'Pcs';
+          } else if (grainWords.some(w => l.includes(w))) {
+            catSel.value = 'அரிசி & தானியங்கள்';
+            unitSel.value = (l.includes('sippam') || l.includes('mootai') || l.includes('bag')) ? 'Pcs' : 'Kg';
+          } else if (dalWords.some(w => l.includes(w))) {
+            catSel.value = 'பருப்பு வகைகள்';
+            unitSel.value = 'Kg';
+          } else if (sweetWords.some(w => l.includes(w))) {
+            catSel.value = 'பேக்கிங் & இனிப்பு வகைகள்';
+            unitSel.value = 'Kg';
+          } else if (spiceWords.some(w => l.includes(w))) {
+            catSel.value = 'மசாலா & வாசனைப் பொருட்கள்';
             unitSel.value = 'Kg';
           }
 
+          // 2. கூகுள் தமிழ் டிரான்ஸ்லிட்டரேஷன்
           transliterateTimer = setTimeout(async () => {
             try {
               let url = `https://inputtools.google.com/request?text=${encodeURIComponent(trimmed)}&itc=ta-t-i0-und&num=1`;
               let res = await fetch(url);
               let data = await res.json();
               if (data && data[0] === 'SUCCESS' && data[1][0][1].length > 0) {
-                document.getElementById('npPrintName').value = data[1][0][1][0];
+                let tamilText = data[1][0][1][0];
+                document.getElementById('npPrintName').value = tamilText;
+
+                // தமிழ் பெயர் வந்த பிறகான இரண்டாவது கட்ட சரிபார்ப்பு
+                if (tamilText.includes('எண்ணெய்') || tamilText.includes('நெய்')) {
+                  catSel.value = 'எண்ணெய் & நெய்';
+                  unitSel.value = 'L';
+                } else if (tamilText.includes('பருப்பு') || tamilText.includes('உளுந்து')) {
+                  catSel.value = 'பருப்பு வகைகள்';
+                  unitSel.value = 'Kg';
+                } else if (tamilText.includes('அரிசி') || tamilText.includes('ரவை') || tamilText.includes('கோதுமை')) {
+                  catSel.value = 'அரிசி & தானியங்கள்';
+                } else if (tamilText.includes('சீனி') || tamilText.includes('சர்க்கரை') || tamilText.includes('வெல்லம்') || tamilText.includes('உப்பு')) {
+                  catSel.value = 'பேக்கிங் & இனிப்பு வகைகள்';
+                } else if (tamilText.includes('சீரகம்') || tamilText.includes('மிளகு') || tamilText.includes('மஞ்சள்') || tamilText.includes('மசாலா')) {
+                  catSel.value = 'மசாலா & வாசனைப் பொருட்கள்';
+                } else if (tamilText.includes('சோப்பு') || tamilText.includes('பேஸ்ட்')) {
+                  catSel.value = 'சோப்பு, பேஸ்ட் & பூஜா';
+                  unitSel.value = 'Pcs';
+                }
               }
             } catch(err) {
               document.getElementById('npPrintName').value = trimmed;
@@ -1084,39 +1188,60 @@ def get_ui():
           }, 250);
         }
 
-        function filterProductList(query) {
-          let q = query.trim().toLowerCase();
-          if (!q) {
-            renderProductList(db.products.slice(-6).reverse());
-            return;
-          }
-          let filtered = db.products.filter(p => 
-            String(p.code).includes(q) || 
-            p.name.toLowerCase().includes(q) || 
-            p.print_name.toLowerCase().includes(q)
-          );
-          renderProductList(filtered.slice(0, 15));
+        function resetAndFilterProducts() {
+          let q = (document.getElementById('prodSearchInput').value || '').trim().toLowerCase();
+          let selectedCat = document.getElementById('catFilterSelect').value;
+
+          filteredProductsList = db.products.filter(p => {
+            let matchesCat = (selectedCat === 'ALL') || (p.category === selectedCat);
+            let pCode = String(p.code);
+            let pName = (p.name || '').toLowerCase();
+            let pPrint = (p.print_name || '').toLowerCase();
+            let matchesSearch = !q || pCode.includes(q) || pName.includes(q) || pPrint.includes(q);
+            return matchesCat && matchesSearch;
+          });
+
+          prodDisplayLimit = 20;
+          renderProductListChunks();
         }
 
-        function renderProductList(list) {
-          let h = '';
-          if (list.length === 0) {
-            h = '<p style="text-align:center; font-size:12px; color:#64748b; padding:10px;">பொருட்கள் இல்லை.</p>';
-          } else {
-            list.forEach(p => {
-              h += `<div style="display:flex; justify-content:space-between; align-items:center; background:#ffffff; padding:8px 10px; border-radius:6px; border:1px solid #cbd5e1; font-size:13px; font-weight:700;">
-                      <div style="flex:1;">
-                        <span>🏷️ [${p.code}] ${p.print_name}</span>
-                        <div style="font-size:11px; color:#64748b; font-weight:500;">${p.name} | ₹${p.price} / ${p.unit}</div>
-                      </div>
-                      <div style="display:flex; gap:4px;">
-                        <button onclick="populateProdEdit(${p.code}, '${p.name}', '${p.print_name}', '${p.unit}', ${p.price})" class="btn btn-soft-blue" style="padding:4px 8px; font-size:11px; min-height:30px;">Edit</button>
-                        <button onclick="deleteProduct(${p.code})" class="btn btn-red" style="padding:4px 8px; font-size:11px; min-height:30px;">நீக்கு</button>
-                      </div>
-                    </div>`;
-            });
+        function renderProductListChunks() {
+          let listDiv = document.getElementById('prodList');
+          if (filteredProductsList.length === 0) {
+            listDiv.innerHTML = '<p style="text-align:center; font-size:12px; color:#64748b; padding:15px;">பொருட்கள் எதுவும் இல்லை.</p>';
+            return;
           }
-          document.getElementById('prodList').innerHTML = h;
+
+          let itemsToRender = filteredProductsList.slice(0, prodDisplayLimit);
+          let h = '';
+          itemsToRender.forEach(p => {
+            let catBadge = p.category ? `<span style="font-size:10px; background:#eff6ff; color:#1d4ed8; padding:1px 6px; border-radius:4px; border:1px solid #bfdbfe; margin-left:4px;">${p.category}</span>` : '';
+            h += `<div style="display:flex; justify-content:space-between; align-items:center; background:#ffffff; padding:8px 10px; border-radius:6px; border:1px solid #cbd5e1; font-size:13px; font-weight:700;">
+                    <div style="flex:1;">
+                      <span>🏷️ [${p.code}] ${p.print_name} ${catBadge}</span>
+                      <div style="font-size:11px; color:#64748b; font-weight:500;">${p.name} | ₹${p.price} / ${p.unit}</div>
+                    </div>
+                    <div style="display:flex; gap:4px;">
+                      <button onclick="populateProdEdit(${p.code}, '${p.name}', '${p.print_name}', '${p.unit}', ${p.price}, '${p.category || 'பொதுவானவை'}')" class="btn btn-soft-blue" style="padding:4px 8px; font-size:11px; min-height:30px;">Edit</button>
+                      <button onclick="deleteProduct(${p.code})" class="btn btn-red" style="padding:4px 8px; font-size:11px; min-height:30px;">நீக்கு</button>
+                    </div>
+                  </div>`;
+          });
+
+          if (prodDisplayLimit < filteredProductsList.length) {
+            h += `<div style="text-align:center; padding:8px; font-size:11px; color:#64748b; font-weight:700;">மேலும் பார்க்க கீழே ஸ்க்ரோல் செய்யவும்... (${itemsToRender.length}/${filteredProductsList.length})</div>`;
+          }
+
+          listDiv.innerHTML = h;
+        }
+
+        function onProdListScroll(el) {
+          if (el.scrollTop + el.clientHeight >= el.scrollHeight - 30) {
+            if (prodDisplayLimit < filteredProductsList.length) {
+              prodDisplayLimit += 20;
+              renderProductListChunks();
+            }
+          }
         }
 
         async function saveProduct() {
@@ -1125,16 +1250,11 @@ def get_ui():
           let print_name = document.getElementById('npPrintName').value.trim() || name;
           let unit = document.getElementById('npUnit').value;
           let price = parseFloat(document.getElementById('npRate').value);
+          let category = document.getElementById('npCategory').value;
 
           if (isNaN(code) || !name || isNaN(price)) return alert('அனைத்து விவரங்களையும் உள்ளிடவும்!');
 
-          let existingIdx = db.products.findIndex(x => parseInt(x.code) === code);
-          let newObj = { code, name, print_name, unit, price };
-          if (existingIdx >= 0) db.products[existingIdx] = newObj;
-          else db.products.push(newObj);
-
-          renderProductList(db.products.slice(-6).reverse());
-          clearProdForm();
+          let newObj = { code, name, print_name, unit, price, category };
 
           try {
             let res = await fetch('/api/product', { 
@@ -1143,11 +1263,15 @@ def get_ui():
               body: JSON.stringify(newObj) 
             });
             let out = await res.json();
-            if (out.status !== 'ok') alert('பொருள் சேமிப்பதில் பிழை: ' + out.msg);
+            if (out.status === 'ok') {
+              clearProdForm();
+              await fetchAll();
+            } else {
+              alert('பொருள் சேமிப்பதில் பிழை: ' + out.msg);
+            }
           } catch(e) {
             alert('சர்வர் தொடர்பு பிழை: ' + e);
           }
-          await fetchAll();
         }
 
         function clearProdForm() {
@@ -1160,12 +1284,13 @@ def get_ui():
           setNextProductCode();
         }
 
-        function populateProdEdit(code, name, print_name, unit, price) {
+        function populateProdEdit(code, name, print_name, unit, price, category) {
           document.getElementById('npCode').value = code;
           document.getElementById('npName').value = name;
           document.getElementById('npPrintName').value = print_name;
           document.getElementById('npUnit').value = unit;
           document.getElementById('npRate').value = price;
+          document.getElementById('npCategory').value = category || 'பொதுவானவை';
           document.getElementById('prodFormTitle').innerText = '✏️ விலை திருத்தம் (' + code + ')';
           document.getElementById('btnSaveProd').innerText = '💾 Update';
           document.getElementById('prodEditBadge').classList.remove('hidden');
@@ -1173,10 +1298,16 @@ def get_ui():
         }
 
         async function deleteProduct(code) {
-          if (!confirm('இந்தப் பொருளை நீக்கவா?')) return;
+          if (!confirm(`பொருள் கோட் [${code}]-ஐ நீக்கவா?`)) return;
           try {
-            await fetch(`/api/product/${code}`, { method: 'DELETE' });
-            await fetchAll();
+            let res = await fetch(`/api/product/${code}`, { method: 'DELETE' });
+            let out = await res.json();
+            if (out.status === 'ok') {
+              await fetchAll();
+              alert('பொருள் நீக்கப்பட்டது!');
+            } else {
+              alert('நீக்குவதில் பிழை: ' + out.msg);
+            }
           } catch(e) {
             alert('நீக்குவதில் பிழை: ' + e);
           }
@@ -1462,6 +1593,7 @@ def get_ui():
             document.getElementById('viewProds').classList.remove('hidden');
             document.getElementById('tabProds').className = "tab-btn active";
             setNextProductCode();
+            resetAndFilterProducts();
           } else if(t === 'ledger') {
             document.getElementById('viewLedger').classList.remove('hidden');
             document.getElementById('tabLedger').className = "tab-btn active";
@@ -1476,3 +1608,7 @@ def get_ui():
     </body>
     </html>
     """
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
