@@ -75,7 +75,7 @@ def init_db():
         c = conn.cursor()
         if USE_POSTGRES:
             c.execute("""CREATE TABLE IF NOT EXISTS products 
-                         (code INTEGER PRIMARY KEY, name TEXT, print_name TEXT, unit TEXT, price NUMERIC, category TEXT DEFAULT 'பொதுவானவை')""")
+                         (code TEXT PRIMARY KEY, name TEXT, print_name TEXT, unit TEXT, price NUMERIC, category TEXT DEFAULT 'பொதுவானவை')""")
             try:
                 c.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS category TEXT DEFAULT 'பொதுவானவை'")
             except Exception:
@@ -90,7 +90,7 @@ def init_db():
                           customer_name TEXT, items TEXT, total NUMERIC, paid NUMERIC DEFAULT 0.0, time_str TEXT)""")
         else:
             c.execute("""CREATE TABLE IF NOT EXISTS products 
-                         (code INTEGER PRIMARY KEY, name TEXT, print_name TEXT, unit TEXT, price REAL, category TEXT DEFAULT 'பொதுவானவை')""")
+                         (code TEXT PRIMARY KEY, name TEXT, print_name TEXT, unit TEXT, price REAL, category TEXT DEFAULT 'பொதுவானவை')""")
             try:
                 c.execute("ALTER TABLE products ADD COLUMN category TEXT DEFAULT 'பொதுவானவை'")
             except Exception:
@@ -105,18 +105,18 @@ def init_db():
                           customer_name TEXT, items TEXT, total REAL, paid REAL DEFAULT 0.0, time_str TEXT)""")
             
             sample_prods = [
-                (101, 'seeragam', 'சீரகம்', 'Kg', 600.0, 'மசாலா & வாசனைப் பொருட்கள்'),
-                (102, 'milagu', 'மிளகு', 'Kg', 900.0, 'மசாலா & வாசனைப் பொருட்கள்'),
-                (103, 'kadalai ennai', 'கடலை எண்ணெய்', 'L', 180.0, 'எண்ணெய் & நெய்'),
-                (104, 'jeeni', 'சீனி', 'Kg', 42.0, 'பேக்கிங் & இனிப்பு வகைகள்'),
-                (105, 'colgate paste', 'கோல்கேட் பேஸ்ட்', 'Pcs', 45.0, 'சோப்பு, பேஸ்ட் & பூஜா'),
-                (106, 'ponni arisi', 'பொன்னி அரிசி', 'Kg', 55.0, 'அரிசி & தானியங்கள்'),
-                (107, 'ponni arisi sippam', 'பொன்னி அரிசி (சிப்பம்)', 'Pcs', 1350.0, 'அரிசி & தானியங்கள்')
+                ('101', 'seeragam', 'சீரகம்', 'Kg', 600.0, 'மசாலா & வாசனைப் பொருட்கள்'),
+                ('102', 'milagu', 'மிளகு', 'Kg', 900.0, 'மசாலா & வாசனைப் பொருட்கள்'),
+                ('103', 'kadalai ennai', 'கடலை எண்ணெய்', 'L', 180.0, 'எண்ணெய் & நெய்'),
+                ('104', 'jeeni', 'சீனி', 'Kg', 42.0, 'பேக்கிங் & இனிப்பு வகைகள்'),
+                ('105', 'colgate paste', 'கோல்கேட் பேஸ்ட்', 'Pcs', 45.0, 'சோப்பு, பேஸ்ட் & பூஜா'),
+                ('106', 'ponni arisi', 'பொன்னி அரிசி', 'Kg', 55.0, 'அரிசி & தானியங்கள்'),
+                ('107', 'ponni arisi sippam', 'பொன்னி அரிசி (சிப்பம்)', 'Pcs', 1350.0, 'அரிசி & தானியங்கள்')
             ]
             for p in sample_prods:
                 c.execute("INSERT OR IGNORE INTO products (code, name, print_name, unit, price, category) VALUES (?, ?, ?, ?, ?, ?)", p)
 
-        # பழைய 110 பொருட்களுக்கான ஆட்டோ-அப்டேட்
+        # Smart Category Dictionary
         smart_categorizer = [
             ('எண்ணெய் & நெய்', ['%gold winner%', '%mr gold%', '%fortune%', '%sunland%', '%idayam%', '%udhai%', '%udhaya%', '%ghee%', '%oil%', '%ennai%', '%enna%', '%nallenna%', '%kadalenna%', '%thengaenna%', '%vilakkenna%', '%dalda%', '%vanaspathi%', '%நெய்%', '%எண்ணெய்%']),
             ('சோப்பு, பேஸ்ட் & பூஜா', ['%hamam%', '%cinthol%', '%lifebuoy%', '%lux%', '%santhoor%', '%pears%', '%medimix%', '%dettol%', '%soap%', '%colgate%', '%close up%', '%pepsodent%', '%sensodyne%', '%paste%', '%brush%', '%surf%', '%aerial%', '%tide%', '%rin%', '%wheel%', '%vim%', '%exo%', '%shampoo%', '%clinic plus%', '%vatika%', '%meera%', '%dhoop%', '%agarbathi%', '%oothabathi%', '%theepetti%', '%karpooram%', '%சோப்பு%', '%பேஸ்ட்%', '%ஊதுபத்தி%', '%கற்பூரம்%']),
@@ -134,10 +134,6 @@ def init_db():
                 c.execute(update_sql, (cat_name, kw, kw))
 
         conn.commit()
-        if USE_POSTGRES:
-            print("🚀 Supabase PostgreSQL Connected & Categorized!")
-        else:
-            print("💻 Local SQLite Connected & Categorized!")
         c.close()
     except Exception as e:
         if conn: conn.rollback()
@@ -150,9 +146,16 @@ init_db()
 @app.get("/api/data")
 def get_data():
     try:
-        products = execute_query("SELECT code, name, COALESCE(print_name, name) as print_name, unit, price, COALESCE(category, 'பொதுவானவை') as category FROM products ORDER BY code ASC", fetch_all=True)
+        products = execute_query("SELECT code, name, COALESCE(print_name, name) as print_name, unit, price, COALESCE(category, 'பொதுவானவை') as category FROM products", fetch_all=True)
+        # Sort in Python safely regardless of integer or text in DB
+        def sort_key(p):
+            try:
+                return int(p['code'])
+            except:
+                return 999999
+        products = sorted(products or [], key=sort_key)
         customers = execute_query("SELECT id, name, balance FROM customers ORDER BY name ASC", fetch_all=True)
-        return {"status": "ok", "products": products or [], "customers": customers or []}
+        return {"status": "ok", "products": products, "customers": customers or []}
     except Exception as e:
         return {"status": "error", "msg": str(e), "products": [], "customers": []}
 
@@ -185,7 +188,7 @@ def get_customer_ledger(cid: int):
         return {"status": "error", "msg": str(e), "ledger": []}
 
 class ProductItem(BaseModel):
-    code: int
+    code: str
     name: str
     print_name: str
     unit: str
@@ -196,22 +199,37 @@ class ProductItem(BaseModel):
 def update_product(p: ProductItem):
     try:
         cat = p.category.strip() if p.category else "பொதுவானவை"
+        clean_code = str(p.code).strip()
+        clean_name = p.name.strip().lower()
+        clean_print = p.print_name.strip().lower()
+
+        # 1. டூப்ளிகேட் பெயர் சரிபார்ப்பு (Duplicate Name Check)
+        chk_sql = """SELECT code, print_name FROM products 
+                     WHERE (LOWER(name) = ? OR LOWER(print_name) = ? OR LOWER(name) = ? OR LOWER(print_name) = ?) 
+                     AND CAST(code AS TEXT) != ?"""
+        existing = execute_query(chk_sql, (clean_name, clean_name, clean_print, clean_print, clean_code), fetch_one=True)
+        if existing:
+            return {"status": "exists", "msg": f"'{existing['print_name']}' [கோட்: {existing['code']}] ஏற்கனவே கடையில் உள்ளது! ஒரே பொருளை இரண்டு முறை சேர்க்க முடியாது."}
+
+        # 2. இன்சர்ட் அல்லது அப்டேட்
         if USE_POSTGRES:
             execute_query("""INSERT INTO products (code, name, print_name, unit, price, category) VALUES (?, ?, ?, ?, ?, ?)
                              ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name, print_name=EXCLUDED.print_name, unit=EXCLUDED.unit, price=EXCLUDED.price, category=EXCLUDED.category""",
-                          (p.code, p.name.strip(), p.print_name.strip(), p.unit, p.price, cat), commit=True)
+                          (clean_code, p.name.strip(), p.print_name.strip(), p.unit, p.price, cat), commit=True)
         else:
             execute_query("""INSERT INTO products (code, name, print_name, unit, price, category) VALUES (?, ?, ?, ?, ?, ?)
                              ON CONFLICT(code) DO UPDATE SET name=excluded.name, print_name=excluded.print_name, unit=excluded.unit, price=excluded.price, category=excluded.category""",
-                          (p.code, p.name.strip(), p.print_name.strip(), p.unit, p.price, cat), commit=True)
+                          (clean_code, p.name.strip(), p.print_name.strip(), p.unit, p.price, cat), commit=True)
         return {"status": "ok"}
     except Exception as e:
         return {"status": "error", "msg": str(e)}
 
 @app.delete("/api/product/{code}")
-def delete_product(code: int):
+def delete_product(code: str):
     try:
-        execute_query("DELETE FROM products WHERE code=?", (code,), commit=True)
+        clean_code = str(code).strip()
+        # PostgreSQL & SQLite இரண்டிற்கும் பாதுகாப்பான CAST(code AS TEXT)
+        execute_query("DELETE FROM products WHERE CAST(code AS TEXT) = ?", (clean_code,), commit=True)
         return {"status": "ok"}
     except Exception as e:
         return {"status": "error", "msg": str(e)}
@@ -485,7 +503,7 @@ def get_ui():
 
           <div class="box">
             <div class="input-group">
-              <input type="number" id="posCode" placeholder="Code" style="flex: 0.8; text-align: center; font-size: 15px; font-weight: 800;" oninput="onPosCodeInput()">
+              <input type="text" id="posCode" placeholder="Code" style="flex: 0.8; text-align: center; font-size: 15px; font-weight: 800;" oninput="onPosCodeInput()">
               <input type="text" id="posSearch" placeholder="🔍 தேடல் (seeragam, ponni...)" style="flex: 2.2;" oninput="handlePosSmartSearch(this.value)" autocomplete="off">
             </div>
 
@@ -537,7 +555,7 @@ def get_ui():
           </div>
         </div>
 
-        <!-- 2. PRODUCTS TAB (ACCURATE DICTIONARY CATEGORIZATION + INFINITE SCROLL) -->
+        <!-- 2. PRODUCTS TAB (DUPLICATE PROTECTED + BULLETPROOF DELETE) -->
         <div id="viewProds" class="view-panel hidden">
           <div class="box" style="background: #f0fdf4; border-color: #bbf7d0;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
@@ -546,8 +564,8 @@ def get_ui():
             </div>
             
             <div class="input-group">
-              <input type="number" id="npCode" placeholder="Code" style="flex: 0.8; text-align: center; font-weight: 800; background: #e2e8f0;" readonly>
-              <input type="text" id="npName" placeholder="Tanglish பெயர் (gold winner, marie, thoor...)" style="flex: 2.2;" oninput="onTanglishType(this.value)">
+              <input type="text" id="npCode" placeholder="Code" style="flex: 0.8; text-align: center; font-weight: 800; background: #e2e8f0;" readonly>
+              <input type="text" id="npName" placeholder="Tanglish பெயர் (gold winner, thoor...)" style="flex: 2.2;" oninput="onTanglishType(this.value)">
             </div>
             
             <div class="input-group">
@@ -627,7 +645,7 @@ def get_ui():
           </div>
 
           <div style="display: flex; justify-content: space-between; align-items: center;">
-            <h4 style="font-size: 12px; color: #475569;">வாடிக்கையாளர்கள் (தொட்டு பார்க்க):</h4>
+            <h4 style="font-size: 12px; color: #475569;">வாடிக்கையாளர்கள்:</h4>
             <span style="font-size: 11px; color: #64748b;" id="custCountBadge">மொத்தம்: 0</span>
           </div>
           
@@ -682,7 +700,7 @@ def get_ui():
             <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px;">
               <span style="font-size: 12px; font-weight: 800; color: #1e40af;">📅 தேதி:</span>
               <input type="date" id="historyDatePicker" style="flex: 1; padding: 4px 8px; font-size: 13px; height: 36px;" onchange="loadHistoryByDate(this.value)">
-              <button onclick="loadHistoryByDate(document.getElementById('historyDatePicker').value)" class="btn btn-soft-blue" style="padding: 4px 10px; min-height: 36px;" title="புதுப்பி (Refresh)">🔄</button>
+              <button onclick="loadHistoryByDate(document.getElementById('historyDatePicker').value)" class="btn btn-soft-blue" style="padding: 4px 10px; min-height: 36px;" title="புதுப்பி">🔄</button>
             </div>
             <div style="margin-top: 5px;">
               <input type="text" id="historySearchInput" placeholder="🔍 பில் எண் அல்லது பெயர் தேட..." oninput="filterHistoryList(this.value)" style="height: 36px; font-size: 13px;">
@@ -774,7 +792,6 @@ def get_ui():
         let posSearchTransliterateTimer = null;
         let activePbCustomer = null;
 
-        // Infinite Scroll State
         let filteredProductsList = [];
         let prodDisplayLimit = 20;
 
@@ -824,9 +841,9 @@ def get_ui():
         }
 
         function onPosCodeInput() {
-          let codeVal = parseInt(document.getElementById('posCode').value);
-          if (isNaN(codeVal)) return;
-          let p = db.products.find(x => parseInt(x.code) === codeVal);
+          let codeVal = document.getElementById('posCode').value.trim();
+          if (!codeVal) return;
+          let p = db.products.find(x => String(x.code) === codeVal);
           if (p) selectPosProduct(p);
         }
 
@@ -869,7 +886,7 @@ def get_ui():
           }
           let h = '';
           matched.slice(0, 8).forEach(p => {
-            h += `<div class="suggest-item" onclick="choosePosItem(${p.code})">
+            h += `<div class="suggest-item" onclick="choosePosItem('${p.code}')">
                     <span><b>[${p.code}] ${p.print_name}</b> <small style="color:#64748b;">(${p.name})</small></span>
                     <span style="color:#2563eb;">₹${p.price}/${p.unit}</span>
                   </div>`;
@@ -879,7 +896,7 @@ def get_ui():
         }
 
         function choosePosItem(code) {
-          let p = db.products.find(x => parseInt(x.code) === code);
+          let p = db.products.find(x => String(x.code) === String(code));
           if (p) selectPosProduct(p);
           document.getElementById('posSuggestions').classList.add('hidden');
         }
@@ -1093,7 +1110,7 @@ def get_ui():
           }
         }
 
-        /* ==================== PRODUCTS TAB (COMPREHENSIVE DICTIONARY MAPPING) ==================== */
+        /* ==================== PRODUCTS TAB ==================== */
         function setNextProductCode() {
           let editBadge = document.getElementById('prodEditBadge');
           if (editBadge && !editBadge.classList.contains('hidden')) return;
@@ -1102,7 +1119,7 @@ def get_ui():
             let c = parseInt(p.code);
             if (!isNaN(c) && c > maxCode) maxCode = c;
           });
-          document.getElementById('npCode').value = maxCode + 1;
+          document.getElementById('npCode').value = String(maxCode + 1);
         }
 
         function onTanglishType(val) {
@@ -1117,7 +1134,6 @@ def get_ui():
           let unitSel = document.getElementById('npUnit');
           let catSel = document.getElementById('npCategory');
 
-          // முழுமையான மளிகை அகராதிப் பிரிவு சோதனை
           const oilWords = ['gold winner', 'mr gold', 'fortune', 'sunland', 'idayam', 'anandham', 'udhai', 'udhaya', 'ghee', 'ney', 'nei', 'oil', 'ennai', 'enna', 'nallenna', 'kadalenna', 'thengaenna', 'vilakkenna', 'dalda', 'vanaspathi'];
           const soapWords = ['hamam', 'cinthol', 'lifebuoy', 'lux', 'santhoor', 'mysore sandal', 'pears', 'medimix', 'dettol', 'soap', 'colgate', 'close up', 'pepsodent', 'sensodyne', 'paste', 'brush', 'surf', 'aerial', 'tide', 'rin', 'wheel', 'vim', 'exo', 'pril', 'comfort', 'lizol', 'harpic', 'shampoo', 'clinic plus', 'vatika', 'meera', 'chik', 'dhoop', 'agarbathi', 'oothabathi', 'karpooram', 'theepetti', 'thiri'];
           const snackWords = ['marie', 'parle', 'good day', 'bourbon', 'oreo', 'monaco', '50-50', 'milk bikis', 'dark fantasy', 'tiger', 'biscuit', 'biskut', 'rusk', 'cake', 'munch', 'kitkat', 'dairy milk', '5 star', 'chocolate', 'lays', 'kurkure', 'bingo', 'chips', 'mixture', 'sev', 'karasev', 'appalam', 'vadagam', 'maggi', 'yippee', 'noodles'];
@@ -1127,7 +1143,6 @@ def get_ui():
           const sweetWords = ['seeni', 'sakkarai', 'sugar', 'nattu sakkarai', 'vellam', 'mandai vellam', 'karupatti', 'kalkandu', 'uppu', 'salt', 'tata salt', 'kalluppu', 'thooluppu', 'puli', 'valam puli', 'poondu'];
           const spiceWords = ['seeragam', 'jeeragam', 'milagu', 'kadugu', 'sombu', 'venthaiyam', 'pattai', 'krambu', 'elakkai', 'kasakasa', 'biryani ilai', 'sakthi', 'aachi', 'everest', 'mdh', 'masala', 'sambhar thool', 'rasam thool', 'malli thool', 'dhaniya', 'varamillagai', 'vathal', 'manjal thool', 'perungayam'];
 
-          // 1. கேட்டகரி தேர்வு
           if (oilWords.some(w => l.includes(w))) {
             catSel.value = 'எண்ணெய் & நெய்';
             unitSel.value = 'L';
@@ -1154,7 +1169,6 @@ def get_ui():
             unitSel.value = 'Kg';
           }
 
-          // 2. கூகுள் தமிழ் டிரான்ஸ்லிட்டரேஷன்
           transliterateTimer = setTimeout(async () => {
             try {
               let url = `https://inputtools.google.com/request?text=${encodeURIComponent(trimmed)}&itc=ta-t-i0-und&num=1`;
@@ -1164,7 +1178,6 @@ def get_ui():
                 let tamilText = data[1][0][1][0];
                 document.getElementById('npPrintName').value = tamilText;
 
-                // தமிழ் பெயர் வந்த பிறகான இரண்டாவது கட்ட சரிபார்ப்பு
                 if (tamilText.includes('எண்ணெய்') || tamilText.includes('நெய்')) {
                   catSel.value = 'எண்ணெய் & நெய்';
                   unitSel.value = 'L';
@@ -1222,8 +1235,8 @@ def get_ui():
                       <div style="font-size:11px; color:#64748b; font-weight:500;">${p.name} | ₹${p.price} / ${p.unit}</div>
                     </div>
                     <div style="display:flex; gap:4px;">
-                      <button onclick="populateProdEdit(${p.code}, '${p.name}', '${p.print_name}', '${p.unit}', ${p.price}, '${p.category || 'பொதுவானவை'}')" class="btn btn-soft-blue" style="padding:4px 8px; font-size:11px; min-height:30px;">Edit</button>
-                      <button onclick="deleteProduct(${p.code})" class="btn btn-red" style="padding:4px 8px; font-size:11px; min-height:30px;">நீக்கு</button>
+                      <button onclick="populateProdEdit('${p.code}', '${p.name}', '${p.print_name}', '${p.unit}', ${p.price}, '${p.category || 'பொதுவானவை'}')" class="btn btn-soft-blue" style="padding:4px 8px; font-size:11px; min-height:30px;">Edit</button>
+                      <button onclick="deleteProduct('${p.code}')" class="btn btn-red" style="padding:4px 8px; font-size:11px; min-height:30px;">நீக்கு</button>
                     </div>
                   </div>`;
           });
@@ -1245,14 +1258,14 @@ def get_ui():
         }
 
         async function saveProduct() {
-          let code = parseInt(document.getElementById('npCode').value);
+          let code = document.getElementById('npCode').value.trim();
           let name = document.getElementById('npName').value.trim();
           let print_name = document.getElementById('npPrintName').value.trim() || name;
           let unit = document.getElementById('npUnit').value;
           let price = parseFloat(document.getElementById('npRate').value);
           let category = document.getElementById('npCategory').value;
 
-          if (isNaN(code) || !name || isNaN(price)) return alert('அனைத்து விவரங்களையும் உள்ளிடவும்!');
+          if (!code || !name || isNaN(price)) return alert('அனைத்து விவரங்களையும் உள்ளிடவும்!');
 
           let newObj = { code, name, print_name, unit, price, category };
 
@@ -1263,9 +1276,14 @@ def get_ui():
               body: JSON.stringify(newObj) 
             });
             let out = await res.json();
+            if (out.status === 'exists') {
+              alert(out.msg);
+              return;
+            }
             if (out.status === 'ok') {
               clearProdForm();
               await fetchAll();
+              alert('பொருள் வெற்றிகரமாகச் சேமிக்கப்பட்டது!');
             } else {
               alert('பொருள் சேமிப்பதில் பிழை: ' + out.msg);
             }
