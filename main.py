@@ -952,12 +952,12 @@ def get_ui():
         }
 
         function addToBill() {
-          let tName = document.getElementById('posTamilName').value.trim();
+          let tName = (document.getElementById('posTamilName').value || (currentSelectedProd && (currentSelectedProd.print_name || currentSelectedProd.name)) || '').trim();
           let raw = document.getElementById('posQty').value;
           let parsed = parseSmartInput(raw);
           let tot = parseFloat(document.getElementById('posTotal').value);
 
-          if (!tName || parsed.qty <= 0 || isNaN(tot)) return alert('பொருள் மற்றும் சரியான அளவை உள்ளிடவும்!');
+          if ((!currentSelectedProd || !currentSelectedProd.code) || !tName || parsed.qty <= 0 || isNaN(tot)) return alert('பொருள் மற்றும் சரியான அளவை உள்ளிடவும்!');
 
           let displayQty = '';
           if (activeBaseUnit === 'Pcs') {
